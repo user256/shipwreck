@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Shipwreck</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="hud ui-no-start">
+        <div class="hud-stats">
+          <div>Score: <span id="score">0</span></div>
+          <div>Level: <span id="level">1</span></div>
+          <div>Hull: <span id="hull">100%</span> <span id="shieldHud" hidden>(Shield: 0%)</span></div>
+        </div>
+        <button id="settingsBtn" class="icon-btn" type="button" aria-label="Open settings">⚙</button>
+      </header>
+      <canvas id="game" width="960" height="640" aria-label="Dubloon Disaster game canvas"></canvas>
+      <section class="controls ui-no-start">
+        <button id="largeModeBtn" type="button">Large Mode: Off</button>
+        <button id="restart" type="button">Restart</button>
+      </section>
+      <p id="status" class="status">Collect treasure, dodge mines.</p>
+    </main>
+
+    <div id="settingsBackdrop" class="settings-backdrop ui-no-start" hidden></div>
+    <aside id="settingsPanel" class="settings-panel ui-no-start" aria-label="Game settings" hidden>
+      <div class="settings-header">
+        <h2>Settings</h2>
+        <button id="settingsCloseBtn" class="icon-btn" type="button" aria-label="Close settings">✕</button>
+      </div>
+      <div class="settings-body">
+        <p class="settings-controls-title">Controls</p>
+        <p>Left/Right or A/D = Turn</p>
+        <p>Up or W = Accelerate</p>
+        <p>Down or S = Reverse</p>
+        <p>Space = Pause/Resume</p>
+        <p>F or Enter = Fire (with blaster)</p>
+
+        <label class="toggle">
+          <input id="wrapToggle" type="checkbox" />
+          Wrap World
+        </label>
+        <label class="toggle">
+          <input id="shockwaveToggle" type="checkbox" checked />
+          Shockwaves
+        </label>
+        <label class="toggle">
+          <input id="mineChainToggle" type="checkbox" />
+          Mine Chain Blast
+        </label>
+        <label class="toggle">
+          Start Level
+          <input id="startLevelInput" type="number" min="1" max="99" value="1" />
+        </label>
+        <div class="settings-actions">
+          <button id="startAtBtn" type="button">Start At</button>
+        </div>
+      </div>
+    </aside>
+    <script src="./game.js"></script>
+  </body>
+</html>
