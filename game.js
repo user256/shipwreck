@@ -56,7 +56,43 @@ const TUNING = {
   treasureSpawnIntervalMax: 1.5,
   treasureSpawnIntervalMin: 0.7,
   treasureSpawnIntervalPerLevel: 0.05,
+  /** Boss fight: modest extra loot (keep below normal spam). */
+  bossTreasureSpawnMin: 0.88,
+  bossTreasureSpawnMax: 1.35,
+  bossMysterySpawnMin: 7.5,
+  bossMysterySpawnMax: 12.5,
+  /** Extra mystery prizes allowed while a boss is active (on top of normal cap). */
+  bossMysteryExtraCap: 6,
+  /** Virtual level boost when rolling treasure tiers during a boss. */
+  bossTreasureLevelBonus: 2,
+  /**
+   * Level 5: up to three combat relocates — each fires when remaining HP drops *below*
+   * maxHp × value (e.g. 0.75 → after ~25% damage, then 50%, then 75%).
+   */
+  bossRelocateRemainingFracs: [0.75, 0.5, 0.25],
+  /** Level 5 relocate: new patrol row Y is chosen between these world-height fractions. */
+  bossRelocateYMinFrac: 0.09,
+  bossRelocateYMaxFrac: 0.38,
+  /** Prefer a vertical shift at least this tall (fraction of world height) when possible. */
+  bossRelocateYMinDeltaFrac: 0.055,
+  /** Level 5: seconds of loot time after the raider dies, then the level timer hits and you advance. */
+  postBossLevel5CollectSeconds: 7,
+  /** Level 5 mirror raider: intro/outro vertical jump (fraction of world height). */
+  bossAppearJumpHeightFrac: 0.2,
+  bossExitJumpHeightFrac: 0.24,
 };
+
+/** Levels that trigger a boss encounter (interstitial + clear field + unique threat). */
+const BOSS_LEVELS = new Set([5]);
+
+function isBossLevel(level) {
+  return BOSS_LEVELS.has(level);
+}
+
+/** Big vertical hop when the level 5 raider enters / leaves (other boss levels TBD). */
+function bossUsesLevel5JumpEffects() {
+  return game.level === 5;
+}
 
 // Hidden debug/nostalgia cheats (intentionally not shown in UI):
 // - howdoyouturnthisthingon => blaster
@@ -121,10 +157,14 @@ const KEY = Object.create(null);
 let cheatBuffer = "";
 
 function resumeFromLevelPause() {
+  if (game.pendingBossSpawn) {
+    spawnBossMirrorRaider();
+    game.pendingBossSpawn = false;
+  }
   game.awaitingLevelContinue = false;
   game.paused = false;
   game.lastTs = performance.now();
-  statusEl.textContent = "Sail!";
+  statusEl.textContent = game.boss ? "Sail — take down the raider!" : "Sail!";
 }
 
 function togglePause() {
@@ -250,6 +290,13 @@ const game = {
   /** Space mode only: one or two gravity worlds (two more likely in large mode). */
   planets: [],
   spaceDecor: { stars: [], asteroids: [] },
+  /** Mirror raider (level 5+ boss): patrols top, fires horizontal bolts. */
+  boss: null,
+  bossBullets: [],
+  /** After reset with a boss start level, first click opens boss interstitial. */
+  bossIntroAfterStart: false,
+  /** Cleared field; spawn boss when player dismisses the boss interstitial. */
+  pendingBossSpawn: false,
   settings: {
     wrapWorld: false,
     shockwaves: true,
@@ -312,7 +359,13 @@ function resetGame() {
   game.treasureSpawnTimer = 1.2;
   game.levelTimer = 0;
   game.lastTs = performance.now();
-  statusEl.textContent = `Click anywhere to start. Starting at level ${startLevel}.`;
+  game.boss = null;
+  game.bossBullets = [];
+  game.bossIntroAfterStart = isBossLevel(startLevel);
+  game.pendingBossSpawn = false;
+  statusEl.textContent = game.bossIntroAfterStart
+    ? `Boss level ${startLevel} — click to start, then Space or tap to engage.`
+    : `Click anywhere to start. Starting at level ${startLevel}.`;
   if (mobileCruiseBtn) {
     mobileCruiseBtn.classList.remove("active");
     mobileCruiseBtn.textContent = "Cruise: Off";
@@ -374,6 +427,10 @@ function isJumpLandingClear(tx, ty, playerRadius) {
 
 function tryEmergencyJump() {
   if (game.awaitingLevelContinue) return;
+  if (game.boss !== null || game.pendingBossSpawn) {
+    statusEl.textContent = "Jump offline — defeat the raider first.";
+    return;
+  }
   if (game.score < game.jumpNextThreshold) {
     statusEl.textContent = `Jump locked — reach ${game.jumpNextThreshold} score for the next charge.`;
     return;
@@ -473,6 +530,20 @@ function applyCanvasSize() {
     rescaleEntityCollection(game.treasures, sx, sy);
     rescaleEntityCollection(game.explosions, sx, sy);
     rescaleEntityCollection(game.bullets, sx, sy);
+    rescaleEntityCollection(game.bossBullets, sx, sy);
+    if (game.boss) {
+      game.boss.x *= sx;
+      game.boss.y *= sy;
+      if (typeof game.boss.baseY === "number") game.boss.baseY *= sy;
+      if (typeof game.boss.appearJump === "number") game.boss.appearJump *= sy;
+      const rj = game.boss.relocJump;
+      if (rj) {
+        rj.fromX *= sx;
+        rj.toX *= sx;
+        if (typeof rj.fromBaseY === "number") rj.fromBaseY *= sy;
+        if (typeof rj.toBaseY === "number") rj.toBaseY *= sy;
+      }
+    }
     const rs = (sx + sy) * 0.5;
     for (const p of game.planets) {
       p.x *= sx;
@@ -600,6 +671,11 @@ function placePlanets(avoidPlayer) {
 const GRAVITY_WELL_STRENGTH = 96;
 /** At well center, extra velocity retention per ~60fps step (lower = slower). Edge of pull radius = no extra drag. */
 const GRAVITY_WELL_SLOW_DRAG_FLOOR = 0.92;
+/**
+ * Same idea, but when the entity is inside 2+ planets’ pull radii (overlap “soup”),
+ * use a lower floor so movement stays a bit slower there.
+ */
+const GRAVITY_WELL_OVERLAP_DRAG_FLOOR = 0.885;
 
 function applyGravityWellVelocity(e, dt, mul) {
   if (!game.settings.spaceMode) return;
@@ -621,17 +697,23 @@ function applyGravityWellSlowDrag(e, dt) {
   if (!game.settings.spaceMode || game.planets.length === 0) return;
   let gw = null;
   let best = Infinity;
+  let wellsContaining = 0;
   for (const p of game.planets) {
     const dist = Math.hypot(e.x - p.x, e.y - p.y);
-    if (dist < p.pullRadius && dist < best) {
-      best = dist;
-      gw = p;
+    if (dist < p.pullRadius) {
+      wellsContaining += 1;
+      if (dist < best) {
+        best = dist;
+        gw = p;
+      }
     }
   }
   if (!gw || best < 1e-6) return;
   const falloff = 1 - best / gw.pullRadius;
   const blend = falloff * falloff;
-  const dragStepBase = 1 + (GRAVITY_WELL_SLOW_DRAG_FLOOR - 1) * blend;
+  const dragFloor =
+    wellsContaining >= 2 ? GRAVITY_WELL_OVERLAP_DRAG_FLOOR : GRAVITY_WELL_SLOW_DRAG_FLOOR;
+  const dragStepBase = 1 + (dragFloor - 1) * blend;
   e.vx *= Math.pow(dragStepBase, dt * 60);
   e.vy *= Math.pow(dragStepBase, dt * 60);
 }
@@ -753,6 +835,29 @@ function spawnTreasure() {
     value: type.value,
     life: type.life,
     maxLife: type.life,
+    color: type.color,
+    kind: "coin",
+  });
+}
+
+/** Richer coin table while fighting a boss (more points on the field). */
+function spawnBossFightTreasure() {
+  const lvl = Math.min(99, game.level + TUNING.bossTreasureLevelBonus);
+  const type = chooseTreasure(lvl);
+  let x = rand(35, WORLD.width - 35);
+  let y = rand(35, WORLD.height - 35);
+  for (let k = 0; k < 18; k += 1) {
+    if (!overlapsSolidSphere(x, y, type.radius)) break;
+    x = rand(35, WORLD.width - 35);
+    y = rand(35, WORLD.height - 35);
+  }
+  game.treasures.push({
+    x,
+    y,
+    radius: type.radius,
+    value: type.value,
+    life: type.life + 0.6,
+    maxLife: type.life + 0.6,
     color: type.color,
     kind: "coin",
   });
@@ -1003,8 +1108,25 @@ function getMysteryPrizeCap() {
   return TUNING.mysteryCapBase + Math.floor(game.score / 1000) * TUNING.mysteryCapPerThousand;
 }
 
+/** Effective cap for spawning mystery pickups (higher during boss brawls). */
+function getMysterySpawnCap() {
+  const base = getMysteryPrizeCap();
+  return game.boss !== null ? base + TUNING.bossMysteryExtraCap : base;
+}
+
+/** 0–4: speed, hull, immunity, shield, blaster ladder. Boss fights bias shield & blaster. */
+function rollMysteryPowerupKind() {
+  if (!game.boss) return Math.floor(rand(0, 5));
+  const r = Math.random();
+  if (r < 0.1) return 0;
+  if (r < 0.24) return 1;
+  if (r < 0.38) return 2;
+  if (r < 0.62) return 3;
+  return 4;
+}
+
 function applyMysteryPowerup() {
-  const roll = Math.floor(rand(0, 5));
+  const roll = rollMysteryPowerupKind();
   if (roll === 0) {
     game.speedBoostTimer = Math.min(game.speedBoostTimer + 6.5, 15);
     statusEl.textContent = "Mystery prize: speed boost!";
@@ -1086,6 +1208,256 @@ function handleBulletMineHits() {
   game.mines = game.mines.filter((_, idx) => aliveMines[idx]);
 }
 
+function clearFieldForBoss() {
+  game.mines = [];
+  game.treasures = [];
+  game.bullets = [];
+  game.explosions = [];
+}
+
+function spawnBossMirrorRaider() {
+  const skin = SHIP_SKIN_OPTIONS.some((o) => o.id === game.settings.shipSkin)
+    ? game.settings.shipSkin
+    : "default";
+  loadRasterShipAssets();
+  const useJump = bossUsesLevel5JumpEffects();
+  const baseY = WORLD.height * 0.14;
+  const appearJump = useJump
+    ? Math.min(150, WORLD.height * TUNING.bossAppearJumpHeightFrac)
+    : 0;
+  game.boss = {
+    x: WORLD.width * 0.5,
+    y: useJump ? baseY + appearJump : baseY,
+    baseY,
+    appearJump,
+    spawnAnimT: useJump ? 0 : 1,
+    dying: false,
+    exitAnimT: 0,
+    relocStage: 0,
+    relocJump: null,
+    vx: 125,
+    vy: 0,
+    angle: 0,
+    radius: 13,
+    shipSkin: skin,
+    maxHp: 14,
+    hp: 14,
+    shootCd: useJump ? 999 : 0.35,
+  };
+  game.treasureSpawnTimer = 0.95;
+  game.mysterySpawnTimer = 6.5;
+}
+
+function defeatBoss() {
+  const bonus = 520 + game.level * 40;
+  const levelWhenKilled = game.level;
+  game.score += bonus;
+  game.boss = null;
+  game.bossBullets = [];
+  const collectSec = TUNING.postBossLevel5CollectSeconds;
+  if (levelWhenKilled === 5) {
+    game.levelTimer = Math.max(0, TUNING.levelStepSeconds - collectSec);
+    addOverlay(`Raider destroyed +${bonus} — ~${collectSec}s to loot!`, "#a9ffbc");
+    statusEl.textContent = `Level 5 clearing in ~${collectSec}s — grab what you can! (+${bonus})`;
+  } else {
+    game.levelTimer = 0;
+    addOverlay(`Raider destroyed +${bonus}`, "#a9ffbc");
+    statusEl.textContent = `Boss cleared — +${bonus} score. Stay sharp.`;
+  }
+  const treasureInterval = clamp(
+    TUNING.treasureSpawnIntervalMax - game.level * TUNING.treasureSpawnIntervalPerLevel,
+    TUNING.treasureSpawnIntervalMin,
+    TUNING.treasureSpawnIntervalMax
+  );
+  game.treasureSpawnTimer = treasureInterval * 0.5;
+  game.mysterySpawnTimer = rand(10.5, 15.5);
+  updateHud();
+}
+
+function updateBoss(dt) {
+  const boss = game.boss;
+  if (!boss) return;
+
+  if (boss.dying) {
+    boss.exitAnimT += dt;
+    const dur = 0.58;
+    const u = Math.min(1, boss.exitAnimT / dur);
+    const exitLift = WORLD.height * TUNING.bossExitJumpHeightFrac;
+    const startY = typeof boss.baseY === "number" ? boss.baseY : boss.y;
+    boss.y = startY - u * u * exitLift - Math.sin(u * Math.PI) * (exitLift * 0.12);
+    if (u >= 1) defeatBoss();
+    return;
+  }
+
+  if (boss.spawnAnimT < 1) {
+    const dur = 0.52;
+    boss.spawnAnimT = Math.min(1, boss.spawnAnimT + dt / dur);
+    const t = boss.spawnAnimT;
+    const k = 1 - (1 - t) ** 2.35;
+    const aj = boss.appearJump || 0;
+    boss.y = boss.baseY + (1 - k) * aj;
+    if (boss.spawnAnimT >= 1) {
+      boss.y = boss.baseY;
+      boss.shootCd = 0.35;
+    }
+    return;
+  }
+
+  if (boss.relocJump) {
+    const dur = 0.5;
+    const rj = boss.relocJump;
+    rj.t += dt / dur;
+    const u = Math.min(1, rj.t);
+    const ease = 1 - (1 - u) ** 2;
+    boss.x = rj.fromX + (rj.toX - rj.fromX) * ease;
+    const fromBY = rj.fromBaseY;
+    const toBY = rj.toBaseY;
+    const lineY = fromBY + (toBY - fromBY) * ease;
+    const hopH = (boss.appearJump || Math.min(90, WORLD.height * 0.14)) * 0.52;
+    boss.y = lineY - Math.sin(u * Math.PI) * hopH;
+    if (u >= 1) {
+      boss.x = rj.toX;
+      boss.baseY = toBY;
+      boss.y = toBY;
+      boss.relocJump = null;
+      boss.shootCd = Math.max(boss.shootCd, 0.45);
+      maybeTriggerBossHpRelocate(boss);
+    }
+    return;
+  }
+
+  boss.x += boss.vx * dt;
+  const pad = boss.radius + 4;
+  if (boss.x < pad) {
+    boss.x = pad;
+    boss.vx = Math.abs(boss.vx);
+    boss.angle = 0;
+  } else if (boss.x > WORLD.width - pad) {
+    boss.x = WORLD.width - pad;
+    boss.vx = -Math.abs(boss.vx);
+    boss.angle = Math.PI;
+  }
+  boss.shootCd -= dt;
+  if (boss.shootCd <= 0) {
+    const dir = Math.cos(boss.angle) >= 0 ? 1 : -1;
+    const bs = 440;
+    game.bossBullets.push({
+      x: boss.x + dir * (boss.radius + 8),
+      y: boss.y,
+      vx: dir * bs,
+      vy: 0,
+      radius: 4,
+      life: 2.8,
+    });
+    boss.shootCd = rand(0.42, 0.78);
+  }
+}
+
+function updateBossBullets(dt) {
+  for (const b of game.bossBullets) {
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    b.life -= dt;
+  }
+  game.bossBullets = game.bossBullets.filter(
+    (b) => b.life > 0 && b.x > -24 && b.x < WORLD.width + 24 && b.y > -24 && b.y < WORLD.height + 24
+  );
+}
+
+function handlePlayerBulletsVsBossBullets() {
+  if (game.bullets.length === 0 || game.bossBullets.length === 0) return;
+  const bAlive = new Array(game.bullets.length).fill(true);
+  const bbAlive = new Array(game.bossBullets.length).fill(true);
+  for (let bi = 0; bi < game.bullets.length; bi += 1) {
+    if (!bAlive[bi]) continue;
+    const b = game.bullets[bi];
+    for (let bbi = 0; bbi < game.bossBullets.length; bbi += 1) {
+      if (!bbAlive[bbi]) continue;
+      const bb = game.bossBullets[bbi];
+      const rr = b.radius + bb.radius;
+      if (distSq(b, bb) < rr * rr) {
+        bAlive[bi] = false;
+        bbAlive[bbi] = false;
+        game.explosions.push({
+          x: (b.x + bb.x) * 0.5,
+          y: (b.y + bb.y) * 0.5,
+          life: 0.22,
+          maxLife: 0.22,
+          radius: 5,
+          innerRadius: 14,
+          pushRadius: 28,
+          damageApplied: true,
+          mineChainApplied: true,
+        });
+        break;
+      }
+    }
+  }
+  game.bullets = game.bullets.filter((_, idx) => bAlive[idx]);
+  game.bossBullets = game.bossBullets.filter((_, idx) => bbAlive[idx]);
+}
+
+function handlePlayerBulletsVsBoss() {
+  const boss = game.boss;
+  if (!boss || boss.dying || game.bullets.length === 0) return;
+  const alive = new Array(game.bullets.length).fill(true);
+  for (let bi = 0; bi < game.bullets.length; bi += 1) {
+    if (!alive[bi]) continue;
+    const b = game.bullets[bi];
+    const rr = b.radius + boss.radius;
+    if (distSq(b, boss) < rr * rr) {
+      alive[bi] = false;
+      boss.hp -= 1;
+      if (boss.hp <= 0) {
+        if (bossUsesLevel5JumpEffects()) {
+          boss.dying = true;
+          boss.exitAnimT = 0;
+          game.bossBullets = [];
+        } else {
+          defeatBoss();
+        }
+        game.bullets = game.bullets.filter((_, idx) => alive[idx]);
+        return;
+      }
+      maybeTriggerBossHpRelocate(boss);
+    }
+  }
+  game.bullets = game.bullets.filter((_, idx) => alive[idx]);
+}
+
+/** Level 5: up to three combat jumps as HP crosses each remaining-HP threshold. */
+function maybeTriggerBossHpRelocate(boss) {
+  if (!bossUsesLevel5JumpEffects() || boss.dying || boss.relocJump) return;
+  const fracs = TUNING.bossRelocateRemainingFracs;
+  if (boss.relocStage >= fracs.length) return;
+  if (boss.hp >= boss.maxHp * fracs[boss.relocStage]) return;
+  boss.relocStage += 1; // consumed this gate (1st–3rd relocate)
+  const pad = boss.radius + 8;
+  let targetX = rand(pad + 50, WORLD.width - pad - 50);
+  for (let tries = 0; tries < 12; tries += 1) {
+    if (Math.abs(targetX - game.player.x) > Math.min(140, WORLD.width * 0.22)) break;
+    targetX = rand(pad + 50, WORLD.width - pad - 50);
+  }
+  const yPad = boss.radius + 6;
+  const yMin = yPad + WORLD.height * TUNING.bossRelocateYMinFrac;
+  const yMax = WORLD.height * TUNING.bossRelocateYMaxFrac - yPad;
+  const minDelta = WORLD.height * TUNING.bossRelocateYMinDeltaFrac;
+  let targetBaseY = rand(yMin, yMax);
+  for (let tries = 0; tries < 16; tries += 1) {
+    if (Math.abs(targetBaseY - boss.baseY) >= minDelta) break;
+    targetBaseY = rand(yMin, yMax);
+  }
+  boss.relocJump = {
+    fromX: boss.x,
+    toX: targetX,
+    fromBaseY: boss.baseY,
+    toBaseY: clamp(targetBaseY, yMin, yMax),
+    t: 0,
+  };
+  game.bossBullets = [];
+  boss.shootCd = Math.max(boss.shootCd, 0.85);
+}
+
 function handleCollisions() {
   const p = game.player;
 
@@ -1116,23 +1488,51 @@ function handleCollisions() {
       }
     }
   }
+
+  // Boss bolts.
+  if (game.invuln <= 0 && game.immunityTimer <= 0 && game.bossBullets.length > 0) {
+    const keep = [];
+    for (const bb of game.bossBullets) {
+      const rr = p.radius + bb.radius;
+      if (distSq(p, bb) < rr * rr) {
+        applyDamage("Raider bolt!");
+      } else {
+        keep.push(bb);
+      }
+    }
+    game.bossBullets = keep;
+  }
 }
 
 function updateDifficulty(dt) {
-  game.levelTimer += dt;
-  if (game.levelTimer >= TUNING.levelStepSeconds) {
-    game.level += 1;
-    game.levelTimer = 0;
-    if (game.settings.pauseOnLevelUp) {
-      game.paused = true;
-      game.awaitingLevelContinue = true;
-      const hint = "Press Space or tap to continue.";
-      statusEl.textContent = `Level ${game.level}. ${hint}`;
-    } else {
-      statusEl.textContent = `Level ${game.level} - mines are faster.`;
-    }
-    if (game.settings.spaceMode) {
-      placePlanets(false);
+  const inBossFight = game.boss !== null;
+  const bossLocksLevelProgress =
+    inBossFight || (isBossLevel(game.level) && game.pendingBossSpawn);
+
+  if (!bossLocksLevelProgress) {
+    game.levelTimer += dt;
+    if (game.levelTimer >= TUNING.levelStepSeconds) {
+      game.level += 1;
+      game.levelTimer = 0;
+
+      if (isBossLevel(game.level)) {
+        clearFieldForBoss();
+        game.pendingBossSpawn = true;
+        game.paused = true;
+        game.awaitingLevelContinue = true;
+        statusEl.textContent = `BOSS — Level ${game.level}. Space or tap to engage.`;
+        addOverlay("Mirror raider", "#ffb08a");
+      } else if (game.settings.pauseOnLevelUp) {
+        game.paused = true;
+        game.awaitingLevelContinue = true;
+        const hint = "Press Space or tap to continue.";
+        statusEl.textContent = `Level ${game.level}. ${hint}`;
+      } else {
+        statusEl.textContent = `Level ${game.level} - mines are faster.`;
+      }
+      if (game.settings.spaceMode) {
+        placePlanets(false);
+      }
     }
   }
 
@@ -1147,21 +1547,35 @@ function updateDifficulty(dt) {
     TUNING.treasureSpawnIntervalMax
   );
   game.mineSpawnTimer -= dt;
-  game.treasureSpawnTimer -= dt;
   if (game.mineSpawnTimer <= 0) {
     spawnMine();
     game.mineSpawnTimer = mineInterval;
   }
-  if (game.treasureSpawnTimer <= 0) {
-    spawnTreasure();
-    game.treasureSpawnTimer = treasureInterval;
-  }
 
-  game.mysterySpawnTimer -= dt;
-  if (game.mysterySpawnTimer <= 0) {
-    const cap = getMysteryPrizeCap();
-    if (game.mysteryAwarded < cap) spawnMysteryPrize();
-    game.mysterySpawnTimer = rand(10.5, 15.5);
+  if (inBossFight) {
+    game.treasureSpawnTimer -= dt;
+    if (game.treasureSpawnTimer <= 0) {
+      spawnBossFightTreasure();
+      game.treasureSpawnTimer = rand(TUNING.bossTreasureSpawnMin, TUNING.bossTreasureSpawnMax);
+    }
+    game.mysterySpawnTimer -= dt;
+    if (game.mysterySpawnTimer <= 0) {
+      const cap = getMysterySpawnCap();
+      if (game.mysteryAwarded < cap) spawnMysteryPrize();
+      game.mysterySpawnTimer = rand(TUNING.bossMysterySpawnMin, TUNING.bossMysterySpawnMax);
+    }
+  } else {
+    game.treasureSpawnTimer -= dt;
+    if (game.treasureSpawnTimer <= 0) {
+      spawnTreasure();
+      game.treasureSpawnTimer = treasureInterval;
+    }
+    game.mysterySpawnTimer -= dt;
+    if (game.mysterySpawnTimer <= 0) {
+      const cap = getMysteryPrizeCap();
+      if (game.mysteryAwarded < cap) spawnMysteryPrize();
+      game.mysterySpawnTimer = rand(10.5, 15.5);
+    }
   }
 }
 
@@ -1263,9 +1677,9 @@ function drawWater() {
   ctx.globalAlpha = 1;
 }
 
-function getReadyRasterShipImage() {
+function getRasterImageForSkin(skinId) {
   if (
-    game.settings.shipSkin === "serenity" &&
+    skinId === "serenity" &&
     serenityShipImg &&
     serenityShipImg.complete &&
     serenityShipImg.naturalWidth > 0
@@ -1273,7 +1687,7 @@ function getReadyRasterShipImage() {
     return serenityShipImg;
   }
   if (
-    game.settings.shipSkin === "firefly" &&
+    skinId === "firefly" &&
     fireflyShipImg &&
     fireflyShipImg.complete &&
     fireflyShipImg.naturalWidth > 0
@@ -1283,16 +1697,24 @@ function getReadyRasterShipImage() {
   return null;
 }
 
-function getRasterShipNoseTailScale() {
-  const opt = SHIP_SKIN_OPTIONS.find((o) => o.id === game.settings.shipSkin);
+function getReadyRasterShipImage() {
+  return getRasterImageForSkin(game.settings.shipSkin);
+}
+
+function getRasterNoseTailScaleForSkin(skinId) {
+  const opt = SHIP_SKIN_OPTIONS.find((o) => o.id === skinId);
   const s = opt?.rasterScale;
   return typeof s === "number" && s > 0 ? s : 1;
 }
 
-function drawRasterShipSprite(img, p, hullDamageRatio) {
+function getRasterShipNoseTailScale() {
+  return getRasterNoseTailScaleForSkin(game.settings.shipSkin);
+}
+
+function drawRasterShipSpriteWithScale(img, entity, hullDamageRatio, noseTailScale) {
   const iw = img.naturalWidth;
   const ih = img.naturalHeight;
-  const noseTail = p.radius * 3.35 * getRasterShipNoseTailScale();
+  const noseTail = entity.radius * 3.35 * noseTailScale;
   const drawH = noseTail;
   const drawW = (noseTail * iw) / ih;
   ctx.rotate(Math.PI / 2);
@@ -1300,6 +1722,10 @@ function drawRasterShipSprite(img, p, hullDamageRatio) {
   ctx.drawImage(img, -drawW * 0.5, -drawH * 0.5, drawW, drawH);
   ctx.filter = "none";
   ctx.rotate(-Math.PI / 2);
+}
+
+function drawRasterShipSprite(img, p, hullDamageRatio) {
+  drawRasterShipSpriteWithScale(img, p, hullDamageRatio, getRasterShipNoseTailScale());
 }
 
 function drawPlayer() {
@@ -1370,6 +1796,48 @@ function drawMines() {
     ctx.moveTo(-m.radius - 4, -3);
     ctx.lineTo(-m.radius - 11, 3);
     ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawBossShip(boss) {
+  const hullDamageRatio = boss.dying ? 0.35 : clamp(boss.hp / boss.maxHp, 0, 1);
+  ctx.save();
+  let alpha = 0.4 + hullDamageRatio * 0.6;
+  if (boss.dying) {
+    const u = Math.min(1, boss.exitAnimT / 0.58);
+    alpha *= 1 - u * 0.88;
+  } else if (boss.spawnAnimT < 1) {
+    alpha *= 0.65 + boss.spawnAnimT * 0.35;
+  }
+  ctx.globalAlpha = alpha;
+  ctx.translate(boss.x, boss.y);
+  ctx.rotate(boss.angle);
+  const img = getRasterImageForSkin(boss.shipSkin);
+  if (img) {
+    drawRasterShipSpriteWithScale(img, boss, hullDamageRatio, getRasterNoseTailScaleForSkin(boss.shipSkin));
+  } else {
+    ctx.fillStyle = hullDamageRatio > 0.45 ? "#6b5038" : "#4d3928";
+    ctx.beginPath();
+    ctx.moveTo(12 + hullDamageRatio * 6, 0);
+    ctx.lineTo(-10, -10);
+    ctx.lineTo(-6, 0);
+    ctx.lineTo(-10, 10);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = hullDamageRatio > 0.35 ? "#c4b59a" : "#7d7160";
+    ctx.fillRect(-6, -4, 9, 8);
+  }
+  ctx.restore();
+}
+
+function drawBossBullets() {
+  for (const b of game.bossBullets) {
+    ctx.save();
+    ctx.fillStyle = "#ff5c6c";
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   }
 }
@@ -1492,7 +1960,11 @@ function frame(ts) {
     updateBullets(dt);
     applyShockwaveEffects(dt);
     updateDifficulty(dt);
+    handlePlayerBulletsVsBossBullets();
+    handlePlayerBulletsVsBoss();
     handleBulletMineHits();
+    updateBoss(dt);
+    updateBossBullets(dt);
     handleCollisions();
     game.invuln -= dt;
     game.speedBoostTimer = Math.max(0, game.speedBoostTimer - dt);
@@ -1509,6 +1981,8 @@ function frame(ts) {
   drawExplosions();
   drawBullets();
   drawMines();
+  if (game.boss) drawBossShip(game.boss);
+  drawBossBullets();
   drawPlayer();
   drawOverlays();
   drawEffectText();
@@ -1531,10 +2005,18 @@ function frame(ts) {
     ctx.textAlign = "center";
     if (game.awaitingLevelContinue) {
       ctx.font = "bold 38px Trebuchet MS";
-      ctx.fillText(`LEVEL ${game.level}`, WORLD.width * 0.5, WORLD.height * 0.46);
-      ctx.font = "20px Trebuchet MS";
-      ctx.fillText("Mines grow fiercer. Ready?", WORLD.width * 0.5, WORLD.height * 0.53);
-      ctx.fillText("Space or tap to continue", WORLD.width * 0.5, WORLD.height * 0.59);
+      const bossIntro = game.pendingBossSpawn && isBossLevel(game.level);
+      if (bossIntro) {
+        ctx.fillText(`BOSS — LEVEL ${game.level}`, WORLD.width * 0.5, WORLD.height * 0.44);
+        ctx.font = "20px Trebuchet MS";
+        ctx.fillText("Your twin hunts the horizon — mines keep spawning.", WORLD.width * 0.5, WORLD.height * 0.51);
+        ctx.fillText("Blast the raider. Space or tap to engage.", WORLD.width * 0.5, WORLD.height * 0.57);
+      } else {
+        ctx.fillText(`LEVEL ${game.level}`, WORLD.width * 0.5, WORLD.height * 0.46);
+        ctx.font = "20px Trebuchet MS";
+        ctx.fillText("Mines grow fiercer. Ready?", WORLD.width * 0.5, WORLD.height * 0.53);
+        ctx.fillText("Space or tap to continue", WORLD.width * 0.5, WORLD.height * 0.59);
+      }
     } else {
       ctx.font = "bold 38px Trebuchet MS";
       ctx.fillText("PAUSED", WORLD.width * 0.5, WORLD.height * 0.5);
@@ -1639,6 +2121,18 @@ if (settingsBackdropEl) {
 window.addEventListener("click", (e) => {
   if (e.target.closest(".ui-no-start")) return;
   if (!game.started && !game.gameOver) {
+    if (game.bossIntroAfterStart) {
+      game.started = true;
+      game.paused = true;
+      game.awaitingLevelContinue = true;
+      clearFieldForBoss();
+      game.pendingBossSpawn = true;
+      game.bossIntroAfterStart = false;
+      game.lastTs = performance.now();
+      addOverlay("Mirror raider", "#ffb08a");
+      statusEl.textContent = `BOSS — Level ${game.level}. Space or tap to engage.`;
+      return;
+    }
     game.started = true;
     game.paused = false;
     game.lastTs = performance.now();
@@ -1732,6 +2226,11 @@ function applyModeFromQueryString() {
     if (params.get("size") === "large") game.settings.largeMode = true;
     const shipParam = params.get("ship");
     if (shipParam === "serenity" || shipParam === "firefly") game.settings.shipSkin = shipParam;
+    const levelParam = params.get("level");
+    if (levelParam !== null && levelParam !== "") {
+      const n = Number.parseInt(levelParam, 10);
+      if (!Number.isNaN(n)) game.settings.startLevel = clamp(n, 1, 99);
+    }
   } catch (_) {
     /* ignore */
   }
