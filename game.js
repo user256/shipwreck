@@ -1,5 +1,9 @@
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
+
+/** Raster ship skins; loaded on demand when selected. */
+let serenityShipImg = null;
+let fireflyShipImg = null;
 const scoreEl = document.getElementById("score");
 const levelEl = document.getElementById("level");
 const hullEl = document.getElementById("hull");
@@ -9,13 +13,29 @@ const restartBtn = document.getElementById("restart");
 const wrapToggleEl = document.getElementById("wrapToggle");
 const shockwaveToggleEl = document.getElementById("shockwaveToggle");
 const mineChainToggleEl = document.getElementById("mineChainToggle");
+const levelPauseToggleEl = document.getElementById("levelPauseToggle");
+const spaceModeToggleEl = document.getElementById("spaceModeToggle");
 const startLevelInputEl = document.getElementById("startLevelInput");
 const startAtBtn = document.getElementById("startAtBtn");
+const cruiseSpeedInputEl = document.getElementById("cruiseSpeedInput");
+const cruiseSpeedValueEl = document.getElementById("cruiseSpeedValue");
+const installBtn = document.getElementById("installBtn");
 const largeModeBtn = document.getElementById("largeModeBtn");
+const worldModeBtn = document.getElementById("worldModeBtn");
 const settingsBtn = document.getElementById("settingsBtn");
 const settingsPanelEl = document.getElementById("settingsPanel");
 const settingsBackdropEl = document.getElementById("settingsBackdrop");
 const settingsCloseBtn = document.getElementById("settingsCloseBtn");
+const shipSkinSelectEl = document.getElementById("shipSkinSelect");
+const mobileLeftBtn = document.getElementById("mobileLeftBtn");
+const mobileDpadUpBtn = document.getElementById("mobileDpadUpBtn");
+const mobileRightBtn = document.getElementById("mobileRightBtn");
+const mobileThrottleBtn = document.getElementById("mobileThrottleBtn");
+const mobileReverseBtn = document.getElementById("mobileReverseBtn");
+const mobileFireBtn = document.getElementById("mobileFireBtn");
+const mobilePauseBtn = document.getElementById("mobilePauseBtn");
+const mobileCruiseBtn = document.getElementById("mobileCruiseBtn");
+const mobileControlsEl = document.getElementById("mobileControls");
 const appEl = document.querySelector(".app");
 
 const WORLD = { width: canvas.width, height: canvas.height };
@@ -42,9 +62,11 @@ const TUNING = {
 // - howdoyouturnthisthingon => blaster
 // - idontexist             => 60s invulnerability
 // - putonyourcapes         => max hull + shield
+// - sethgreen              => max blaster + hull + shield + immunity
 const CHEATS = {
   howdoyouturnthisthingon: () => {
     game.hasBlaster = true;
+    game.blasterTier = 1;
     game.blasterCooldown = 0;
     addOverlay("Power Surge: Blaster", "#ffc38d");
     statusEl.textContent = "A strange power surges through the ship.";
@@ -61,7 +83,29 @@ const CHEATS = {
     addOverlay("Power Surge: Fortified Hull", "#90d5ff");
     statusEl.textContent = "A strange power surges through the ship.";
   },
+  sethgreen: () => {
+    game.hasBlaster = true;
+    game.blasterTier = 3;
+    game.blasterCooldown = 0;
+    game.hull = MAX_HULL;
+    game.shield = MAX_SHIELD;
+    game.immunityTimer = Math.max(game.immunityTimer, 60);
+    game.invuln = Math.max(game.invuln, 1.2);
+    addOverlay("Power Surge: Full Arsenal", "#ffc38d");
+    statusEl.textContent = "A strange power surges through the ship.";
+  },
 };
+
+/**
+ * Ship skins. For raster SVGs, optional `rasterScale` multiplies on-screen size (same base as Classic
+ * hit radius) so different viewBox padding / silhouette fill can be matched. Other approaches: tune SVG
+ * viewBox, or add per-asset `contentCrop` bounds and scale to a fixed world size.
+ */
+const SHIP_SKIN_OPTIONS = [
+  { id: "default", label: "Classic" },
+  { id: "serenity", label: "Serenity", rasterScale: 1 },
+  { id: "firefly", label: "Firefly", rasterScale: 0.88 },
+];
 
 const TREASURE_TABLE = [
   { value: 10, weight: 38, life: 14.5, color: "#a76b2c", radius: 7 },
@@ -75,6 +119,24 @@ const TREASURE_TABLE = [
 
 const KEY = Object.create(null);
 let cheatBuffer = "";
+
+function resumeFromLevelPause() {
+  game.awaitingLevelContinue = false;
+  game.paused = false;
+  game.lastTs = performance.now();
+  statusEl.textContent = "Sail!";
+}
+
+function togglePause() {
+  if (game.gameOver || !game.started) return;
+  if (game.awaitingLevelContinue) {
+    resumeFromLevelPause();
+    return;
+  }
+  game.paused = !game.paused;
+  statusEl.textContent = game.paused ? "Paused. Press Space to resume." : "Resumed.";
+}
+
 window.addEventListener("keydown", (e) => {
   const canTypeCheat = !game.started || game.paused;
   if (canTypeCheat && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.length === 1) {
@@ -90,10 +152,10 @@ window.addEventListener("keydown", (e) => {
   }
   if (e.code === "Space") {
     e.preventDefault();
-    if (!e.repeat && !game.gameOver && game.started) {
-      game.paused = !game.paused;
-      statusEl.textContent = game.paused ? "Paused. Press Space to resume." : "Resumed.";
-    }
+    if (!e.repeat) togglePause();
+  }
+  if (e.code === "KeyG" && !e.repeat && game.started && !game.gameOver && !game.paused) {
+    tryEmergencyJump();
   }
   KEY[e.code] = true;
 });
@@ -176,17 +238,28 @@ const game = {
   immunityTimer: 0,
   shield: 0,
   hasBlaster: false,
+  blasterTier: 0,
   bullets: [],
   blasterCooldown: 0,
+  jumpNextThreshold: 1000,
   overlays: [],
   paused: false,
   started: false,
+  awaitingLevelContinue: false,
+  mobileCruise: false,
+  /** Space mode only: one or two gravity worlds (two more likely in large mode). */
+  planets: [],
+  spaceDecor: { stars: [], asteroids: [] },
   settings: {
     wrapWorld: false,
     shockwaves: true,
     mineChainBlast: false,
+    pauseOnLevelUp: false,
+    spaceMode: false,
     startLevel: 1,
     largeMode: false,
+    cruiseThrottle: 0.82,
+    shipSkin: "default",
   },
 };
 
@@ -194,8 +267,15 @@ function getStartLevel() {
   return clamp(Math.floor(game.settings.startLevel || 1), 1, 99);
 }
 
+/** Keep simulation bounds equal to the full canvas (no inset playfield). */
+function applyPlayfieldLayout() {
+  WORLD.width = canvas.width;
+  WORLD.height = canvas.height;
+}
+
 function resetGame() {
   const startLevel = getStartLevel();
+  applyPlayfieldLayout();
   game.player = {
     x: WORLD.width * 0.5,
     y: WORLD.height * 0.5,
@@ -218,18 +298,53 @@ function resetGame() {
   game.immunityTimer = 0;
   game.shield = 0;
   game.hasBlaster = false;
+  game.blasterTier = 0;
   game.bullets = [];
   game.blasterCooldown = 0;
+  game.jumpNextThreshold = 1000;
   game.overlays = [];
   game.paused = false;
   game.started = false;
+  game.awaitingLevelContinue = false;
+  game.mobileCruise = false;
   cheatBuffer = "";
   game.mineSpawnTimer = 0.6;
   game.treasureSpawnTimer = 1.2;
   game.levelTimer = 0;
   game.lastTs = performance.now();
   statusEl.textContent = `Click anywhere to start. Starting at level ${startLevel}.`;
+  if (mobileCruiseBtn) {
+    mobileCruiseBtn.classList.remove("active");
+    mobileCruiseBtn.textContent = "Cruise: Off";
+  }
+  if (cruiseSpeedInputEl) {
+    cruiseSpeedInputEl.value = String(Math.round(game.settings.cruiseThrottle * 100));
+  }
+  if (cruiseSpeedValueEl) {
+    cruiseSpeedValueEl.textContent = `${Math.round(game.settings.cruiseThrottle * 100)}%`;
+  }
+  if (game.settings.spaceMode) {
+    generateSpaceDecor();
+    placePlanets(true);
+  } else {
+    game.planets = [];
+    game.spaceDecor.stars = [];
+    game.spaceDecor.asteroids = [];
+  }
   updateHud();
+  syncSpaceModeChrome();
+}
+
+function syncSpaceModeChrome() {
+  document.body.classList.toggle("space-mode", game.settings.spaceMode);
+  const metaTheme = document.querySelector('meta[name="theme-color"]');
+  if (metaTheme) {
+    metaTheme.setAttribute("content", game.settings.spaceMode ? "#050508" : "#0b2d4e");
+  }
+  if (spaceModeToggleEl) spaceModeToggleEl.checked = game.settings.spaceMode;
+  if (worldModeBtn) {
+    worldModeBtn.textContent = game.settings.spaceMode ? "World: Planets" : "World: Space";
+  }
 }
 
 function updateHud() {
@@ -248,6 +363,81 @@ function canShoot() {
   return game.hasBlaster && game.blasterCooldown <= 0;
 }
 
+const JUMP_MINE_CLEAR = 48;
+
+function isJumpLandingClear(tx, ty, playerRadius) {
+  for (const m of game.mines) {
+    if (Math.hypot(tx - m.x, ty - m.y) < playerRadius + m.radius + JUMP_MINE_CLEAR) return false;
+  }
+  return !overlapsSolidSphere(tx, ty, playerRadius);
+}
+
+function tryEmergencyJump() {
+  if (game.awaitingLevelContinue) return;
+  if (game.score < game.jumpNextThreshold) {
+    statusEl.textContent = `Jump locked — reach ${game.jumpNextThreshold} score for the next charge.`;
+    return;
+  }
+  const p = game.player;
+  const pr = p.radius;
+  const margin = pr + 8;
+  const halfMap = Math.min(WORLD.width, WORLD.height) * 0.48;
+  const nx = Math.cos(p.angle);
+  const ny = Math.sin(p.angle);
+  for (let d = halfMap; d > 85; d -= 20) {
+    const probe = { x: p.x + nx * d, y: p.y + ny * d, radius: 1 };
+    if (game.settings.wrapWorld) wrapEntity(probe);
+    else {
+      probe.x = clamp(probe.x, margin, WORLD.width - margin);
+      probe.y = clamp(probe.y, margin, WORLD.height - margin);
+    }
+    if (isJumpLandingClear(probe.x, probe.y, pr)) {
+      p.x = probe.x;
+      p.y = probe.y;
+      p.vx = 0;
+      p.vy = 0;
+      game.jumpNextThreshold = game.score + 1000;
+      addOverlay("Emergency jump!", "#a9f2ff");
+      statusEl.textContent = `Jump used — next charge at ${game.jumpNextThreshold} score.`;
+      return;
+    }
+  }
+  statusEl.textContent = "Jump failed — no safe spot ahead. Try another heading.";
+}
+
+function fireBlasterVolley() {
+  const p = game.player;
+  const bulletSpeed = 520;
+  const spread = 0.2;
+  const tier = Math.max(1, game.blasterTier || 1);
+  const spawnBullet = (ang) => {
+    game.bullets.push({
+      x: p.x + Math.cos(ang) * (p.radius + 8),
+      y: p.y + Math.sin(ang) * (p.radius + 8),
+      vx: Math.cos(ang) * bulletSpeed,
+      vy: Math.sin(ang) * bulletSpeed,
+      radius: 4,
+      life: 1.1,
+    });
+  };
+  if (tier === 1) {
+    spawnBullet(p.angle);
+  } else if (tier === 2) {
+    spawnBullet(p.angle - spread);
+    spawnBullet(p.angle);
+    spawnBullet(p.angle + spread);
+  } else {
+    spawnBullet(p.angle - spread);
+    spawnBullet(p.angle);
+    spawnBullet(p.angle + spread);
+    const back = p.angle + Math.PI;
+    spawnBullet(back - spread);
+    spawnBullet(back);
+    spawnBullet(back + spread);
+  }
+  game.blasterCooldown = 0.18;
+}
+
 function rescaleEntityCollection(items, sx, sy) {
   for (const e of items) {
     e.x *= sx;
@@ -256,8 +446,8 @@ function rescaleEntityCollection(items, sx, sy) {
 }
 
 function applyCanvasSize() {
-  const oldW = WORLD.width;
-  const oldH = WORLD.height;
+  const oldWorldW = WORLD.width;
+  const oldWorldH = WORLD.height;
   let newW = DEFAULT_CANVAS_WIDTH;
   let newH = DEFAULT_CANVAS_HEIGHT;
   if (game.settings.largeMode) {
@@ -267,14 +457,14 @@ function applyCanvasSize() {
 
   canvas.width = newW;
   canvas.height = newH;
-  WORLD.width = newW;
-  WORLD.height = newH;
   appEl.style.width = game.settings.largeMode ? "min(100vw, 99vw)" : "min(100vw, 980px)";
   largeModeBtn.textContent = game.settings.largeMode ? "Large Mode: On" : "Large Mode: Off";
 
-  if (oldW > 0 && oldH > 0 && (oldW !== newW || oldH !== newH)) {
-    const sx = newW / oldW;
-    const sy = newH / oldH;
+  applyPlayfieldLayout();
+
+  if (oldWorldW > 0 && oldWorldH > 0 && (oldWorldW !== WORLD.width || oldWorldH !== WORLD.height)) {
+    const sx = WORLD.width / oldWorldW;
+    const sy = WORLD.height / oldWorldH;
     if (game.player) {
       game.player.x *= sx;
       game.player.y *= sy;
@@ -283,6 +473,22 @@ function applyCanvasSize() {
     rescaleEntityCollection(game.treasures, sx, sy);
     rescaleEntityCollection(game.explosions, sx, sy);
     rescaleEntityCollection(game.bullets, sx, sy);
+    const rs = (sx + sy) * 0.5;
+    for (const p of game.planets) {
+      p.x *= sx;
+      p.y *= sy;
+      p.pullRadius *= rs;
+      p.bodyRadius *= rs;
+    }
+    for (const s of game.spaceDecor.stars) {
+      s.x *= sx;
+      s.y *= sy;
+    }
+    for (const a of game.spaceDecor.asteroids) {
+      a.x *= sx;
+      a.y *= sy;
+      a.r *= rs;
+    }
   }
 }
 
@@ -290,6 +496,208 @@ function setSettingsOpen(isOpen) {
   if (!settingsPanelEl || !settingsBackdropEl) return;
   settingsPanelEl.hidden = !isOpen;
   settingsBackdropEl.hidden = !isOpen;
+}
+
+function isMobileLikeDevice() {
+  const hasCoarse = window.matchMedia("(pointer: coarse)").matches;
+  const noHover = window.matchMedia("(hover: none)").matches;
+  const narrow = window.innerWidth <= 900;
+  const touchCapable = navigator.maxTouchPoints > 0;
+  return (hasCoarse || noHover || narrow) && touchCapable;
+}
+
+function updateMobileControlsVisibility() {
+  if (!mobileControlsEl) return;
+  mobileControlsEl.hidden = !isMobileLikeDevice();
+}
+
+function generateSpaceDecor() {
+  const stars = [];
+  for (let i = 0; i < 170; i += 1) {
+    stars.push({
+      x: rand(0, WORLD.width),
+      y: rand(0, WORLD.height),
+      s: rand(0.4, 2.2),
+      a: rand(0.25, 1),
+    });
+  }
+  const asteroids = [];
+  for (let i = 0; i < 22; i += 1) {
+    asteroids.push({
+      x: rand(0, WORLD.width),
+      y: rand(0, WORLD.height),
+      r: rand(7, 26),
+      rot: rand(0, Math.PI * 2),
+      sides: 5 + Math.floor(rand(0, 4)),
+    });
+  }
+  game.spaceDecor.stars = stars;
+  game.spaceDecor.asteroids = asteroids;
+}
+
+function planetMetricsForWorld() {
+  const ref = Math.min(WORLD.width, WORLD.height) / 640;
+  return {
+    pullRadius: clamp(280 * ref, 120, 420),
+    bodyRadius: clamp(34 * ref, 18, 52),
+  };
+}
+
+function placePlanets(avoidPlayer) {
+  game.planets = [];
+  if (!game.settings.spaceMode) return;
+  const m = planetMetricsForWorld();
+  const dual =
+    game.settings.largeMode && Math.random() < (game.settings.wrapWorld ? 0.38 : 0.45);
+  const count = dual ? 2 : 1;
+  const minSep = m.pullRadius * 1.05 + m.bodyRadius * 2;
+  const margin = Math.max(72, m.pullRadius * 0.28);
+
+  const tryPush = (x, y) => {
+    if (x < margin || x > WORLD.width - margin || y < margin || y > WORLD.height - margin) return false;
+    if (
+      avoidPlayer &&
+      game.player &&
+      Math.hypot(x - game.player.x, y - game.player.y) < 130
+    ) {
+      return false;
+    }
+    for (const ex of game.planets) {
+      if (Math.hypot(x - ex.x, y - ex.y) < minSep) return false;
+    }
+    game.planets.push({
+      x,
+      y,
+      pullRadius: m.pullRadius,
+      bodyRadius: m.bodyRadius,
+    });
+    return true;
+  };
+
+  for (let n = 0; n < count; n += 1) {
+    let placed = false;
+    for (let k = 0; k < 48; k += 1) {
+      const x = rand(margin, WORLD.width - margin);
+      const y = rand(margin, WORLD.height - margin);
+      if (tryPush(x, y)) {
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) {
+      const fx = n === 0 ? 0.28 : 0.72;
+      const fy = n === 0 ? 0.35 : 0.62;
+      game.planets.push({
+        x: WORLD.width * fx,
+        y: WORLD.height * fy,
+        pullRadius: m.pullRadius,
+        bodyRadius: m.bodyRadius,
+      });
+    }
+  }
+}
+
+const GRAVITY_WELL_STRENGTH = 96;
+/** At well center, extra velocity retention per ~60fps step (lower = slower). Edge of pull radius = no extra drag. */
+const GRAVITY_WELL_SLOW_DRAG_FLOOR = 0.92;
+
+function applyGravityWellVelocity(e, dt, mul) {
+  if (!game.settings.spaceMode) return;
+  for (const gw of game.planets) {
+    const dx = gw.x - e.x;
+    const dy = gw.y - e.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 10 || dist > gw.pullRadius) continue;
+    const nx = dx / dist;
+    const ny = dy / dist;
+    const falloff = 1 - dist / gw.pullRadius;
+    const accel = GRAVITY_WELL_STRENGTH * mul * falloff * falloff;
+    e.vx += nx * accel * dt;
+    e.vy += ny * accel * dt;
+  }
+}
+
+function applyGravityWellSlowDrag(e, dt) {
+  if (!game.settings.spaceMode || game.planets.length === 0) return;
+  let gw = null;
+  let best = Infinity;
+  for (const p of game.planets) {
+    const dist = Math.hypot(e.x - p.x, e.y - p.y);
+    if (dist < p.pullRadius && dist < best) {
+      best = dist;
+      gw = p;
+    }
+  }
+  if (!gw || best < 1e-6) return;
+  const falloff = 1 - best / gw.pullRadius;
+  const blend = falloff * falloff;
+  const dragStepBase = 1 + (GRAVITY_WELL_SLOW_DRAG_FLOOR - 1) * blend;
+  e.vx *= Math.pow(dragStepBase, dt * 60);
+  e.vy *= Math.pow(dragStepBase, dt * 60);
+}
+
+function driftTreasuresTowardWell(dt) {
+  if (!game.settings.spaceMode || game.planets.length === 0) return;
+  for (const t of game.treasures) {
+    let gw = null;
+    let best = Infinity;
+    for (const p of game.planets) {
+      const dist = Math.hypot(p.x - t.x, p.y - t.y);
+      if (dist < p.pullRadius && dist < best) {
+        best = dist;
+        gw = p;
+      }
+    }
+    if (!gw || best < 6) continue;
+    const dx = gw.x - t.x;
+    const dy = gw.y - t.y;
+    const dist = best;
+    const nx = dx / dist;
+    const ny = dy / dist;
+    const falloff = 1 - dist / gw.pullRadius;
+    const spd = 26 * falloff * falloff * dt;
+    t.x += nx * spd;
+    t.y += ny * spd;
+    t.x = clamp(t.x, t.radius + 4, WORLD.width - t.radius - 4);
+    t.y = clamp(t.y, t.radius + 4, WORLD.height - t.radius - 4);
+    resolveSolidSphere(t, t.radius, false);
+  }
+}
+
+function overlapsSolidSphere(x, y, entityRadius) {
+  if (!game.settings.spaceMode) return false;
+  for (const gw of game.planets) {
+    if (Math.hypot(x - gw.x, y - gw.y) < gw.bodyRadius + entityRadius) return true;
+  }
+  return false;
+}
+
+/** Push entity outside solid planets; optionally reflect velocity off the surface. */
+function resolveSolidSphere(e, entityRadius, reflectVel) {
+  if (!game.settings.spaceMode) return;
+  for (let pass = 0; pass < 3; pass += 1) {
+    let moved = false;
+    for (const gw of game.planets) {
+      const dx = e.x - gw.x;
+      const dy = e.y - gw.y;
+      const dist = Math.hypot(dx, dy);
+      const minD = gw.bodyRadius + entityRadius + 0.5;
+      if (dist >= minD || dist < 1e-5) continue;
+      moved = true;
+      const nx = dx / dist;
+      const ny = dy / dist;
+      e.x = gw.x + nx * minD;
+      e.y = gw.y + ny * minD;
+      if (reflectVel && e.vx !== undefined && e.vy !== undefined) {
+        const vn = e.vx * nx + e.vy * ny;
+        if (vn < 0) {
+          e.vx -= 2 * vn * nx;
+          e.vy -= 2 * vn * ny;
+        }
+      }
+    }
+    if (!moved) break;
+  }
 }
 
 function spawnMine() {
@@ -320,7 +728,9 @@ function spawnMine() {
       mine.y = rand(0, WORLD.height);
     }
 
-    if (Math.hypot(mine.x - p.x, mine.y - p.y) >= minSpawnDistance || tries === 15) {
+    const okPlayer = Math.hypot(mine.x - p.x, mine.y - p.y) >= minSpawnDistance;
+    const okSphere = !overlapsSolidSphere(mine.x, mine.y, mine.radius);
+    if ((okPlayer && okSphere) || tries === 15) {
       game.mines.push(mine);
       return;
     }
@@ -329,9 +739,16 @@ function spawnMine() {
 
 function spawnTreasure() {
   const type = chooseTreasure(game.level);
+  let x = rand(35, WORLD.width - 35);
+  let y = rand(35, WORLD.height - 35);
+  for (let k = 0; k < 18; k += 1) {
+    if (!overlapsSolidSphere(x, y, type.radius)) break;
+    x = rand(35, WORLD.width - 35);
+    y = rand(35, WORLD.height - 35);
+  }
   game.treasures.push({
-    x: rand(35, WORLD.width - 35),
-    y: rand(35, WORLD.height - 35),
+    x,
+    y,
     radius: type.radius,
     value: type.value,
     life: type.life,
@@ -342,10 +759,18 @@ function spawnTreasure() {
 }
 
 function spawnMysteryPrize() {
+  const r = 12;
+  let x = rand(45, WORLD.width - 45);
+  let y = rand(45, WORLD.height - 45);
+  for (let k = 0; k < 18; k += 1) {
+    if (!overlapsSolidSphere(x, y, r)) break;
+    x = rand(45, WORLD.width - 45);
+    y = rand(45, WORLD.height - 45);
+  }
   game.treasures.push({
-    x: rand(45, WORLD.width - 45),
-    y: rand(45, WORLD.height - 45),
-    radius: 12,
+    x,
+    y,
+    radius: r,
     value: 0,
     life: 9.5,
     maxLife: 9.5,
@@ -368,11 +793,15 @@ function updatePlayer(dt) {
 
   const dirX = Math.cos(p.angle);
   const dirY = Math.sin(p.angle);
-  if (KEY.ArrowUp || KEY.KeyW) {
-    p.vx += dirX * accel * dt;
-    p.vy += dirY * accel * dt;
+  const isReversing = KEY.ArrowDown || KEY.KeyS;
+  const keyAccelerating = KEY.ArrowUp || KEY.KeyW;
+  const isAccelerating = keyAccelerating || game.mobileCruise;
+  const thrustScale = keyAccelerating ? 1 : game.mobileCruise ? game.settings.cruiseThrottle : 1;
+  if (isAccelerating && !isReversing) {
+    p.vx += dirX * accel * thrustScale * dt;
+    p.vy += dirY * accel * thrustScale * dt;
   }
-  if (KEY.ArrowDown || KEY.KeyS) {
+  if (isReversing) {
     p.vx -= dirX * reverse * dt;
     p.vy -= dirY * reverse * dt;
   }
@@ -386,22 +815,17 @@ function updatePlayer(dt) {
     p.vy *= s;
   }
 
+  applyGravityWellVelocity(p, dt, 1);
+  applyGravityWellSlowDrag(p, dt);
+
   p.x += p.vx * dt;
   p.y += p.vy * dt;
   if (game.settings.wrapWorld) wrapEntity(p);
   else confineEntity(p, 0.4);
+  resolveSolidSphere(p, p.radius, true);
 
   if (canShoot() && (KEY.KeyF || KEY.Enter)) {
-    const bulletSpeed = 520;
-    game.bullets.push({
-      x: p.x + Math.cos(p.angle) * (p.radius + 8),
-      y: p.y + Math.sin(p.angle) * (p.radius + 8),
-      vx: Math.cos(p.angle) * bulletSpeed,
-      vy: Math.sin(p.angle) * bulletSpeed,
-      radius: 4,
-      life: 1.1,
-    });
-    game.blasterCooldown = 0.18;
+    fireBlasterVolley();
   }
 }
 
@@ -416,10 +840,13 @@ function updateMines(dt) {
     const homing = clamp(0.95 + game.level * 0.02, 0.9, 1.22);
     m.vx += (targetVx - m.vx) * homing * dt;
     m.vy += (targetVy - m.vy) * homing * dt;
+    applyGravityWellVelocity(m, dt, 0.72);
+    applyGravityWellSlowDrag(m, dt);
     m.x += m.vx * dt;
     m.y += m.vy * dt;
     if (game.settings.wrapWorld) wrapEntity(m);
     else confineEntity(m, 0.25);
+    resolveSolidSphere(m, m.radius, true);
   }
 
   // Mine collisions (both destroyed)
@@ -466,6 +893,7 @@ function updateExplosions(dt) {
 
 function updateBullets(dt) {
   for (const b of game.bullets) {
+    applyGravityWellVelocity(b, dt, 0.32);
     b.x += b.vx * dt;
     b.y += b.vy * dt;
     b.life -= dt;
@@ -477,6 +905,9 @@ function updateBullets(dt) {
     );
   } else {
     game.bullets = game.bullets.filter((b) => b.life > 0);
+  }
+  if (game.settings.spaceMode) {
+    game.bullets = game.bullets.filter((b) => !overlapsSolidSphere(b.x, b.y, b.radius));
   }
 }
 
@@ -501,6 +932,7 @@ function applyDamage(message) {
     game.hull = Math.max(0, game.hull - remainingDamage);
     // Blaster drops only when hull is actually damaged.
     game.hasBlaster = false;
+    game.blasterTier = 0;
     game.bullets = [];
     game.blasterCooldown = 0;
   }
@@ -598,11 +1030,26 @@ function applyMysteryPowerup() {
     game.shield = Math.min(MAX_SHIELD, game.shield + 75);
     statusEl.textContent = "Mystery prize: shield strengthened!";
     addOverlay(`POWERUP: Shield ${Math.round(game.shield)}%`, "#90d5ff");
-  } else {
+  } else if (!game.hasBlaster) {
     game.hasBlaster = true;
+    game.blasterTier = 1;
     game.blasterCooldown = 0;
     statusEl.textContent = "Mystery prize: blaster online (F/Enter to fire)!";
     addOverlay("POWERUP: Blaster Online", "#ffc38d");
+  } else if (game.blasterTier === 1) {
+    game.blasterTier = 2;
+    game.blasterCooldown = 0;
+    statusEl.textContent = "Mystery prize: blaster triple spread!";
+    addOverlay("POWERUP: Blaster Spread", "#ffc38d");
+  } else if (game.blasterTier === 2) {
+    game.blasterTier = 3;
+    game.blasterCooldown = 0;
+    statusEl.textContent = "Mystery prize: rear blaster batteries!";
+    addOverlay("POWERUP: Blaster Aft", "#ffc38d");
+  } else {
+    game.score += 200;
+    statusEl.textContent = "Mystery prize: blaster maxed — +200 points!";
+    addOverlay("POWERUP: Bonus +200", "#f2e2a0");
   }
 }
 
@@ -676,7 +1123,17 @@ function updateDifficulty(dt) {
   if (game.levelTimer >= TUNING.levelStepSeconds) {
     game.level += 1;
     game.levelTimer = 0;
-    statusEl.textContent = `Level ${game.level} - mines are faster.`;
+    if (game.settings.pauseOnLevelUp) {
+      game.paused = true;
+      game.awaitingLevelContinue = true;
+      const hint = "Press Space or tap to continue.";
+      statusEl.textContent = `Level ${game.level}. ${hint}`;
+    } else {
+      statusEl.textContent = `Level ${game.level} - mines are faster.`;
+    }
+    if (game.settings.spaceMode) {
+      placePlanets(false);
+    }
   }
 
   const mineInterval = clamp(
@@ -708,6 +1165,79 @@ function updateDifficulty(dt) {
   }
 }
 
+function drawSpaceField() {
+  ctx.fillStyle = "#050508";
+  ctx.fillRect(0, 0, WORLD.width, WORLD.height);
+  for (const st of game.spaceDecor.stars) {
+    ctx.globalAlpha = st.a;
+    ctx.fillStyle = "#e8eef8";
+    ctx.beginPath();
+    ctx.arc(st.x, st.y, st.s, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  for (const ast of game.spaceDecor.asteroids) {
+    ctx.save();
+    ctx.translate(ast.x, ast.y);
+    ctx.rotate(ast.rot);
+    ctx.fillStyle = "#2a2a32";
+    ctx.strokeStyle = "#15151a";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    const n = ast.sides;
+    for (let i = 0; i < n; i += 1) {
+      const ang = (i / n) * Math.PI * 2;
+      const rr = ast.r * (0.78 + 0.22 * Math.sin(i * 1.7 + ast.rot));
+      const px = Math.cos(ang) * rr;
+      const py = Math.sin(ang) * rr;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawOneGravityWorld(gw) {
+  const br = gw.bodyRadius;
+  ctx.save();
+  ctx.globalAlpha = 0.22;
+  ctx.strokeStyle = "#7b6cff";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(gw.x, gw.y, gw.pullRadius, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.globalAlpha = 0.12;
+  ctx.beginPath();
+  ctx.arc(gw.x, gw.y, gw.pullRadius * 0.55, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  const g = ctx.createRadialGradient(gw.x - br * 0.35, gw.y - br * 0.35, br * 0.1, gw.x, gw.y, br);
+  g.addColorStop(0, "#9aaee8");
+  g.addColorStop(0.45, "#4a5a9a");
+  g.addColorStop(1, "#1c1f3a");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(gw.x, gw.y, br, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(200,210,255,0.35)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawGravityWell() {
+  if (!game.settings.spaceMode) return;
+  for (const gw of game.planets) drawOneGravityWorld(gw);
+}
+
+function drawBackground() {
+  if (game.settings.spaceMode) drawSpaceField();
+  else drawWater();
+}
+
 function drawWater() {
   const g = ctx.createRadialGradient(
     WORLD.width * 0.5,
@@ -733,6 +1263,45 @@ function drawWater() {
   ctx.globalAlpha = 1;
 }
 
+function getReadyRasterShipImage() {
+  if (
+    game.settings.shipSkin === "serenity" &&
+    serenityShipImg &&
+    serenityShipImg.complete &&
+    serenityShipImg.naturalWidth > 0
+  ) {
+    return serenityShipImg;
+  }
+  if (
+    game.settings.shipSkin === "firefly" &&
+    fireflyShipImg &&
+    fireflyShipImg.complete &&
+    fireflyShipImg.naturalWidth > 0
+  ) {
+    return fireflyShipImg;
+  }
+  return null;
+}
+
+function getRasterShipNoseTailScale() {
+  const opt = SHIP_SKIN_OPTIONS.find((o) => o.id === game.settings.shipSkin);
+  const s = opt?.rasterScale;
+  return typeof s === "number" && s > 0 ? s : 1;
+}
+
+function drawRasterShipSprite(img, p, hullDamageRatio) {
+  const iw = img.naturalWidth;
+  const ih = img.naturalHeight;
+  const noseTail = p.radius * 3.35 * getRasterShipNoseTailScale();
+  const drawH = noseTail;
+  const drawW = (noseTail * iw) / ih;
+  ctx.rotate(Math.PI / 2);
+  ctx.filter = `brightness(${0.52 + hullDamageRatio * 0.48})`;
+  ctx.drawImage(img, -drawW * 0.5, -drawH * 0.5, drawW, drawH);
+  ctx.filter = "none";
+  ctx.rotate(-Math.PI / 2);
+}
+
 function drawPlayer() {
   const p = game.player;
   const blink = game.invuln > 0 && game.immunityTimer <= 0 && Math.floor(performance.now() / 80) % 2 === 0;
@@ -744,17 +1313,23 @@ function drawPlayer() {
   ctx.globalAlpha = 0.35 + hullDamageRatio * 0.65;
   ctx.translate(p.x, p.y);
   ctx.rotate(p.angle);
-  ctx.fillStyle = hullDamageRatio > 0.5 ? "#7a4920" : "#5d3a1a";
-  ctx.beginPath();
-  ctx.moveTo(12 + hullVisualRatio * 6, 0);
-  ctx.lineTo(-10, -10);
-  ctx.lineTo(-6, 0);
-  ctx.lineTo(-10, 10);
-  ctx.closePath();
-  ctx.fill();
 
-  ctx.fillStyle = hullDamageRatio > 0.4 ? "#d2b98e" : "#8a7c66";
-  ctx.fillRect(-6, -4, 9, 8);
+  const rasterImg = getReadyRasterShipImage();
+  if (rasterImg) {
+    drawRasterShipSprite(rasterImg, p, hullDamageRatio);
+  } else {
+    ctx.fillStyle = hullDamageRatio > 0.5 ? "#7a4920" : "#5d3a1a";
+    ctx.beginPath();
+    ctx.moveTo(12 + hullVisualRatio * 6, 0);
+    ctx.lineTo(-10, -10);
+    ctx.lineTo(-6, 0);
+    ctx.lineTo(-10, 10);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = hullDamageRatio > 0.4 ? "#d2b98e" : "#8a7c66";
+    ctx.fillRect(-6, -4, 9, 8);
+  }
   if (game.shield > 0) {
     const shieldRatio = clamp(game.shield / MAX_SHIELD, 0, 1);
     ctx.strokeStyle = `rgba(130, 214, 255, ${0.25 + shieldRatio * 0.55})`;
@@ -774,14 +1349,16 @@ function drawPlayer() {
 }
 
 function drawMines() {
+  const bodyFill = game.settings.spaceMode ? "#9fd4f0" : "#141414";
+  const spikeStroke = game.settings.spaceMode ? "#c43d52" : "#a50505";
   for (const m of game.mines) {
     ctx.save();
     ctx.translate(m.x, m.y);
-    ctx.fillStyle = "#141414";
+    ctx.fillStyle = bodyFill;
     ctx.beginPath();
     ctx.arc(0, 0, m.radius, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = "#a50505";
+    ctx.strokeStyle = spikeStroke;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(-3, -m.radius - 4);
@@ -884,7 +1461,15 @@ function drawEffectText() {
   if (game.speedBoostTimer > 0) effects.push(`Speed ${game.speedBoostTimer.toFixed(1)}s`);
   if (game.immunityTimer > 0) effects.push(`Immunity ${game.immunityTimer.toFixed(1)}s`);
   if (game.shield > 0) effects.push(`Shield ${Math.ceil(game.shield)}%`);
-  if (game.hasBlaster) effects.push("Blaster ON");
+  if (game.hasBlaster) {
+    const bl =
+      game.blasterTier >= 3 ? "Blaster x6" : game.blasterTier === 2 ? "Blaster x3" : "Blaster";
+    effects.push(`${bl} ON`);
+  }
+  if (game.started && !game.gameOver) {
+    if (game.score >= game.jumpNextThreshold) effects.push("Jump ready (G)");
+    else effects.push(`Jump @ ${game.jumpNextThreshold}`);
+  }
   if (effects.length === 0) return;
   ctx.save();
   ctx.textAlign = "left";
@@ -902,6 +1487,7 @@ function frame(ts) {
     updatePlayer(dt);
     updateMines(dt);
     updateTreasures(dt);
+    driftTreasuresTowardWell(dt);
     updateExplosions(dt);
     updateBullets(dt);
     applyShockwaveEffects(dt);
@@ -917,7 +1503,8 @@ function frame(ts) {
     updateHud();
   }
 
-  drawWater();
+  drawBackground();
+  if (game.settings.spaceMode) drawGravityWell();
   drawTreasures();
   drawExplosions();
   drawBullets();
@@ -942,10 +1529,18 @@ function frame(ts) {
     ctx.fillRect(0, 0, WORLD.width, WORLD.height);
     ctx.fillStyle = "#f5e4b8";
     ctx.textAlign = "center";
-    ctx.font = "bold 38px Trebuchet MS";
-    ctx.fillText("PAUSED", WORLD.width * 0.5, WORLD.height * 0.5);
-    ctx.font = "20px Trebuchet MS";
-    ctx.fillText("Press Space to resume", WORLD.width * 0.5, WORLD.height * 0.56);
+    if (game.awaitingLevelContinue) {
+      ctx.font = "bold 38px Trebuchet MS";
+      ctx.fillText(`LEVEL ${game.level}`, WORLD.width * 0.5, WORLD.height * 0.46);
+      ctx.font = "20px Trebuchet MS";
+      ctx.fillText("Mines grow fiercer. Ready?", WORLD.width * 0.5, WORLD.height * 0.53);
+      ctx.fillText("Space or tap to continue", WORLD.width * 0.5, WORLD.height * 0.59);
+    } else {
+      ctx.font = "bold 38px Trebuchet MS";
+      ctx.fillText("PAUSED", WORLD.width * 0.5, WORLD.height * 0.5);
+      ctx.font = "20px Trebuchet MS";
+      ctx.fillText("Press Space to resume", WORLD.width * 0.5, WORLD.height * 0.56);
+    }
   }
 
   if (!game.started && !game.gameOver) {
@@ -979,6 +1574,42 @@ mineChainToggleEl.addEventListener("change", () => {
     ? "Mine chain blasts enabled."
     : "Mine chain blasts disabled.";
 });
+if (levelPauseToggleEl) {
+  levelPauseToggleEl.addEventListener("change", () => {
+    game.settings.pauseOnLevelUp = levelPauseToggleEl.checked;
+    statusEl.textContent = game.settings.pauseOnLevelUp
+      ? "Pause between levels enabled."
+      : "Pause between levels disabled.";
+  });
+}
+if (spaceModeToggleEl) {
+  spaceModeToggleEl.addEventListener("change", () => {
+    game.settings.spaceMode = spaceModeToggleEl.checked;
+    resetGame();
+    statusEl.textContent = game.settings.spaceMode
+      ? "Planets: stars, asteroids & gravity worlds."
+      : "Space: open sky / sea.";
+  });
+}
+if (worldModeBtn) {
+  worldModeBtn.addEventListener("click", () => {
+    game.settings.spaceMode = !game.settings.spaceMode;
+    resetGame();
+    statusEl.textContent = game.settings.spaceMode
+      ? "Planets: stars, asteroids & gravity worlds."
+      : "Space: open sky / sea.";
+  });
+}
+if (shipSkinSelectEl) {
+  shipSkinSelectEl.addEventListener("change", () => {
+    game.settings.shipSkin = shipSkinSelectEl.value;
+    normalizeShipSkin();
+    shipSkinSelectEl.value = game.settings.shipSkin;
+    loadRasterShipAssets();
+    const label = SHIP_SKIN_OPTIONS.find((o) => o.id === game.settings.shipSkin)?.label ?? "Ship";
+    statusEl.textContent = `Ship: ${label}.`;
+  });
+}
 startAtBtn.addEventListener("click", () => {
   const rawLevel = Number.parseInt(startLevelInputEl.value, 10);
   game.settings.startLevel = clamp(Number.isNaN(rawLevel) ? 1 : rawLevel, 1, 99);
@@ -1012,16 +1643,144 @@ window.addEventListener("click", (e) => {
     game.paused = false;
     game.lastTs = performance.now();
     statusEl.textContent = "Sail!";
+    return;
+  }
+  if (game.started && game.awaitingLevelContinue && !game.gameOver) {
+    resumeFromLevelPause();
   }
 });
 window.addEventListener("resize", () => {
   if (game.settings.largeMode) applyCanvasSize();
+  updateMobileControlsVisibility();
 });
 
+function bindHoldButton(el, keyCode) {
+  if (!el) return;
+  const press = (e) => {
+    e.preventDefault();
+    KEY[keyCode] = true;
+  };
+  const release = (e) => {
+    e.preventDefault();
+    KEY[keyCode] = false;
+  };
+  el.addEventListener("pointerdown", press);
+  el.addEventListener("pointerup", release);
+  el.addEventListener("pointercancel", release);
+  el.addEventListener("pointerleave", release);
+}
+
+bindHoldButton(mobileLeftBtn, "KeyA");
+bindHoldButton(mobileRightBtn, "KeyD");
+bindHoldButton(mobileThrottleBtn, "KeyW");
+bindHoldButton(mobileReverseBtn, "KeyS");
+bindHoldButton(mobileFireBtn, "KeyF");
+bindHoldButton(mobileDpadUpBtn, "KeyW");
+if (mobilePauseBtn) {
+  mobilePauseBtn.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    togglePause();
+  });
+}
+if (mobileCruiseBtn) {
+  mobileCruiseBtn.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    game.mobileCruise = !game.mobileCruise;
+    mobileCruiseBtn.classList.toggle("active", game.mobileCruise);
+    mobileCruiseBtn.textContent = game.mobileCruise ? "Cruise: On" : "Cruise: Off";
+    if (!game.mobileCruise) KEY.KeyW = false;
+  });
+}
+
+if (cruiseSpeedInputEl) {
+  cruiseSpeedInputEl.addEventListener("input", () => {
+    const val = clamp(Number.parseInt(cruiseSpeedInputEl.value, 10) || 82, 50, 100);
+    game.settings.cruiseThrottle = val / 100;
+    if (cruiseSpeedValueEl) cruiseSpeedValueEl.textContent = `${val}%`;
+  });
+}
+
+let deferredInstallPrompt = null;
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  if (installBtn) installBtn.hidden = false;
+});
+if (installBtn) {
+  installBtn.addEventListener("click", async () => {
+    if (!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+    installBtn.hidden = true;
+  });
+}
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch(() => {
+      // Silent failure: game still works without offline cache.
+    });
+  });
+}
+
+updateMobileControlsVisibility();
+
+function applyModeFromQueryString() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("mode") === "space") game.settings.spaceMode = true;
+    if (params.get("size") === "large") game.settings.largeMode = true;
+    const shipParam = params.get("ship");
+    if (shipParam === "serenity" || shipParam === "firefly") game.settings.shipSkin = shipParam;
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+function loadRasterShipAssets() {
+  if (game.settings.shipSkin === "serenity" && !serenityShipImg) {
+    serenityShipImg = new Image();
+    serenityShipImg.src = "./assets/serenity.svg";
+  }
+  if (game.settings.shipSkin === "firefly" && !fireflyShipImg) {
+    fireflyShipImg = new Image();
+    fireflyShipImg.src = "./assets/firefly.svg";
+  }
+}
+
+function normalizeShipSkin() {
+  if (!SHIP_SKIN_OPTIONS.some((o) => o.id === game.settings.shipSkin)) {
+    game.settings.shipSkin = "default";
+  }
+}
+
+function initShipSkinSelect() {
+  if (!shipSkinSelectEl) return;
+  shipSkinSelectEl.replaceChildren();
+  for (const opt of SHIP_SKIN_OPTIONS) {
+    const el = document.createElement("option");
+    el.value = opt.id;
+    el.textContent = opt.label;
+    shipSkinSelectEl.appendChild(el);
+  }
+  normalizeShipSkin();
+  shipSkinSelectEl.value = game.settings.shipSkin;
+  if (shipSkinSelectEl.value !== game.settings.shipSkin) {
+    game.settings.shipSkin = "default";
+    shipSkinSelectEl.value = "default";
+  }
+}
+
+applyModeFromQueryString();
+normalizeShipSkin();
+initShipSkinSelect();
+loadRasterShipAssets();
+syncSpaceModeChrome();
 applyCanvasSize();
 resetGame();
 wrapToggleEl.checked = game.settings.wrapWorld;
 shockwaveToggleEl.checked = game.settings.shockwaves;
 mineChainToggleEl.checked = game.settings.mineChainBlast;
+if (levelPauseToggleEl) levelPauseToggleEl.checked = game.settings.pauseOnLevelUp;
 startLevelInputEl.value = String(game.settings.startLevel);
 requestAnimationFrame(frame);

@@ -1,0 +1,24 @@
+{
+  "name": "Shipwreck",
+  "short_name": "Shipwreck",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#082038",
+  "theme_color": "#0b2d4e",
+  "description": "Arcade-style treasure and mine dodging game.",
+  "icons": [
+    {
+      "src": "./icons/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

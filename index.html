@@ -3,7 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0b2d4e" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Shipwreck</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -19,7 +23,29 @@
       <canvas id="game" width="960" height="640" aria-label="Dubloon Disaster game canvas"></canvas>
       <section class="controls ui-no-start">
         <button id="largeModeBtn" type="button">Large Mode: Off</button>
+        <button id="worldModeBtn" type="button" title="World: Space = open sky/sea. World: Planets = stars, asteroids & gravity worlds.">
+          World: Space
+        </button>
         <button id="restart" type="button">Restart</button>
+      </section>
+      <section id="mobileControls" class="mobile-controls ui-no-start" aria-label="Mobile controls" hidden>
+        <div class="mobile-dpad" aria-label="Direction pad">
+          <button id="mobileDpadUpBtn" class="dpad-btn dpad-up" type="button">▲</button>
+          <button id="mobileLeftBtn" class="dpad-btn dpad-left" type="button">◀</button>
+          <button id="mobileDpadCenter" class="dpad-btn dpad-center" type="button" disabled>●</button>
+          <button id="mobileRightBtn" class="dpad-btn dpad-right" type="button">▶</button>
+          <button id="mobileReverseBtn" class="dpad-btn dpad-down" type="button">▼</button>
+        </div>
+        <div class="mobile-actions" aria-label="Action buttons">
+          <div class="mobile-ab">
+            <button id="mobileThrottleBtn" class="ab-btn ab-b" type="button">Thrust</button>
+            <button id="mobileFireBtn" class="ab-btn ab-a" type="button">Fire</button>
+          </div>
+          <div class="mobile-meta">
+            <button id="mobileCruiseBtn" type="button">Cruise: Off</button>
+            <button id="mobilePauseBtn" type="button">Pause</button>
+          </div>
+        </div>
       </section>
       <p id="status" class="status">Collect treasure, dodge mines.</p>
     </main>
@@ -37,6 +63,12 @@
         <p>Down or S = Reverse</p>
         <p>Space = Pause/Resume</p>
         <p>F or Enter = Fire (with blaster)</p>
+        <p>G = Emergency jump (~half map, clear of mines) — unlocks every 1000 score</p>
+
+        <label class="settings-field" for="shipSkinSelect">
+          <span class="settings-field-label">Ship</span>
+          <select id="shipSkinSelect" aria-label="Ship appearance"></select>
+        </label>
 
         <label class="toggle">
           <input id="wrapToggle" type="checkbox" />
@@ -51,11 +83,25 @@
           Mine Chain Blast
         </label>
         <label class="toggle">
+          <input id="levelPauseToggle" type="checkbox" />
+          Pause between levels
+        </label>
+        <label class="toggle">
+          <input id="spaceModeToggle" type="checkbox" />
+          Planets (stars, asteroids, gravity worlds)
+        </label>
+        <label class="toggle">
           Start Level
           <input id="startLevelInput" type="number" min="1" max="99" value="1" />
         </label>
+        <label class="toggle">
+          Cruise Speed
+          <input id="cruiseSpeedInput" type="range" min="50" max="100" step="5" value="82" />
+          <span id="cruiseSpeedValue">82%</span>
+        </label>
         <div class="settings-actions">
           <button id="startAtBtn" type="button">Start At</button>
+          <button id="installBtn" type="button" hidden>Install App</button>
         </div>
       </div>
     </aside>
