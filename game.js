@@ -65,6 +65,12 @@ const TUNING = {
   treasureSpawnIntervalMax: 1.5,
   treasureSpawnIntervalMin: 0.7,
   treasureSpawnIntervalPerLevel: 0.05,
+  /** Black hole core radius is random up to this × scaled planet body radius (same scale as classic worlds). */
+  blackHoleSingularityMaxFracOfPlanetBody: 0.75,
+  /** Lower bound for singularity roll, as a fraction of that max (keeps a visible floor). */
+  blackHoleSingularityMinFracOfCap: 0.22,
+  /** Absolute floor (px) so tiny caps still read in-game. */
+  blackHoleSingularityAbsFloor: 4,
   /** Boss fight: modest extra loot (keep below normal spam). */
   bossTreasureSpawnMin: 0.88,
   bossTreasureSpawnMax: 1.35,
@@ -329,6 +335,8 @@ const game = {
     mineChainBlast: true,
     pauseOnLevelUp: false,
     spaceMode: true,
+    /** Black hole wells + singularity consume. false = classic coloured gravity planets. */
+    singularity: true,
     startLevel: 1,
     largeMode: defaultLargeModeForDesktop(),
     cruiseThrottle: 0.82,
@@ -575,7 +583,8 @@ function applyCanvasSize() {
       p.x *= sx;
       p.y *= sy;
       p.pullRadius *= rs;
-      p.bodyRadius *= rs;
+      if (typeof p.consumeRadius === "number") p.consumeRadius *= rs;
+      if (typeof p.bodyRadius === "number") p.bodyRadius *= rs;
     }
     for (const s of game.spaceDecor.stars) {
       s.x *= sx;
@@ -640,7 +649,89 @@ function planetMetricsForWorld() {
   };
 }
 
-/** Greys, oranges, blues, etc. — `bands` draws extra gas-giant stripes when set. */
+/** Outer influence radius = this × a normal planet’s pull (space mode uses black holes, not planets). */
+const BLACK_HOLE_PULL_RADIUS_FACTOR = 1.5;
+
+/**
+ * Random scale 0.5×–2× on template; pull is 1.5× “normal” pull at that scale.
+ * Singularity (consume) radius is random between a floor and at most 75% of planet body at that scale.
+ */
+function rollBlackHoleDimensions(baseM) {
+  const scale = rand(0.5, 2);
+  const normalPull = clamp(baseM.pullRadius * scale, 62, 560);
+  const pullRadius = clamp(normalPull * BLACK_HOLE_PULL_RADIUS_FACTOR, 95, 820);
+  const bodyAtScale = clamp(baseM.bodyRadius * scale, 9, 92);
+  const maxSingularity = bodyAtScale * TUNING.blackHoleSingularityMaxFracOfPlanetBody;
+  const minFromFrac = maxSingularity * TUNING.blackHoleSingularityMinFracOfCap;
+  const minSingularity = Math.min(
+    maxSingularity * 0.92,
+    Math.max(TUNING.blackHoleSingularityAbsFloor, minFromFrac)
+  );
+  const lo = Math.min(minSingularity, maxSingularity * 0.98);
+  const hi = maxSingularity;
+  const consumeRadius = lo >= hi ? hi : rand(lo, hi);
+  return { pullRadius, consumeRadius };
+}
+
+function placeBlackHoles(avoidPlayer) {
+  const baseM = planetMetricsForWorld();
+  const dual =
+    game.settings.largeMode && Math.random() < (game.settings.wrapWorld ? 0.38 : 0.45);
+  const count = dual ? 2 : 1;
+
+  const tryPush = (x, y, pullRadius, consumeRadius) => {
+    const margin = Math.max(56, pullRadius * 0.26);
+    if (x < margin || x > WORLD.width - margin || y < margin || y > WORLD.height - margin) return false;
+    const avoidPlayerR = Math.max(110, pullRadius * 0.38);
+    if (
+      avoidPlayer &&
+      game.player &&
+      Math.hypot(x - game.player.x, y - game.player.y) < avoidPlayerR
+    ) {
+      return false;
+    }
+    for (const ex of game.planets) {
+      const exC = ex.consumeRadius ?? ex.bodyRadius ?? 12;
+      const sep = ex.pullRadius + pullRadius + (exC + consumeRadius) * 1.15;
+      if (Math.hypot(x - ex.x, y - ex.y) < sep) return false;
+    }
+    game.planets.push({
+      kind: "blackHole",
+      x,
+      y,
+      pullRadius,
+      consumeRadius,
+    });
+    return true;
+  };
+
+  for (let n = 0; n < count; n += 1) {
+    let placed = false;
+    for (let k = 0; k < 56; k += 1) {
+      const dims = rollBlackHoleDimensions(baseM);
+      const margin = Math.max(56, dims.pullRadius * 0.26);
+      const x = rand(margin, WORLD.width - margin);
+      const y = rand(margin, WORLD.height - margin);
+      if (tryPush(x, y, dims.pullRadius, dims.consumeRadius)) {
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) {
+      const dims = rollBlackHoleDimensions(baseM);
+      const fx = n === 0 ? 0.28 : 0.72;
+      const fy = n === 0 ? 0.35 : 0.62;
+      game.planets.push({
+        kind: "blackHole",
+        x: WORLD.width * fx,
+        y: WORLD.height * fy,
+        pullRadius: dims.pullRadius,
+        consumeRadius: dims.consumeRadius,
+      });
+    }
+  }
+}
+
 const PLANET_STYLES = [
   {
     light: "#b8d8f0",
@@ -696,7 +787,6 @@ function pickRandomPlanetStyle() {
   return PLANET_STYLES[Math.floor(Math.random() * PLANET_STYLES.length)];
 }
 
-/** Random scale 0.5×–2× on base template radii (clamped for layout). */
 function rollPlanetDimensions(baseM) {
   const scale = rand(0.5, 2);
   return {
@@ -705,9 +795,7 @@ function rollPlanetDimensions(baseM) {
   };
 }
 
-function placePlanets(avoidPlayer) {
-  game.planets = [];
-  if (!game.settings.spaceMode) return;
+function placeClassicPlanets(avoidPlayer) {
   const baseM = planetMetricsForWorld();
   const dual =
     game.settings.largeMode && Math.random() < (game.settings.wrapWorld ? 0.38 : 0.45);
@@ -767,14 +855,24 @@ function placePlanets(avoidPlayer) {
   }
 }
 
+function placePlanets(avoidPlayer) {
+  game.planets = [];
+  if (!game.settings.spaceMode) return;
+  if (game.settings.singularity) placeBlackHoles(avoidPlayer);
+  else placeClassicPlanets(avoidPlayer);
+}
+
 const GRAVITY_WELL_STRENGTH = 96;
 /** At well center, extra velocity retention per ~60fps step (lower = slower). Edge of pull radius = no extra drag. */
 const GRAVITY_WELL_SLOW_DRAG_FLOOR = 0.92;
 /**
- * Same idea, but when the entity is inside 2+ planets’ pull radii (overlap “soup”),
+ * Same idea, but when the entity is inside 2+ wells’ pull radii (overlap “soup”),
  * use a lower floor so movement stays a bit slower there.
  */
 const GRAVITY_WELL_OVERLAP_DRAG_FLOOR = 0.885;
+/** Black holes apply this multiplier on top of the usual gravity-well slow drag delta. */
+const BLACK_HOLE_SLOW_DRAG_MULTIPLIER = 2;
+const BLACK_HOLE_MIN_DRAG_STEP = 0.83;
 
 function applyGravityWellVelocity(e, dt, mul) {
   if (!game.settings.spaceMode) return;
@@ -812,9 +910,48 @@ function applyGravityWellSlowDrag(e, dt) {
   const blend = falloff * falloff;
   const dragFloor =
     wellsContaining >= 2 ? GRAVITY_WELL_OVERLAP_DRAG_FLOOR : GRAVITY_WELL_SLOW_DRAG_FLOOR;
-  const dragStepBase = 1 + (dragFloor - 1) * blend;
+  let dragStepBase = 1 + (dragFloor - 1) * blend;
+  if (gw.kind === "blackHole") {
+    dragStepBase = 1 + (dragFloor - 1) * blend * BLACK_HOLE_SLOW_DRAG_MULTIPLIER;
+    dragStepBase = Math.max(dragStepBase, BLACK_HOLE_MIN_DRAG_STEP);
+  }
   e.vx *= Math.pow(dragStepBase, dt * 60);
   e.vy *= Math.pow(dragStepBase, dt * 60);
+}
+
+function entityInsideBlackHoleSingularity(x, y, radius) {
+  if (!game.settings.spaceMode || !game.settings.singularity) return false;
+  for (const gw of game.planets) {
+    if (gw.kind !== "blackHole") continue;
+    if (Math.hypot(x - gw.x, y - gw.y) < gw.consumeRadius + radius) return true;
+  }
+  return false;
+}
+
+/** Mines, loot, shots, explosions, and the raider vanish at the core; player = game over. */
+function applyBlackHoleConsumption() {
+  if (!game.settings.singularity || !game.settings.spaceMode || game.planets.length === 0 || game.gameOver)
+    return;
+
+  const p = game.player;
+  if (p && entityInsideBlackHoleSingularity(p.x, p.y, p.radius)) {
+    game.hull = 0;
+    game.gameOver = true;
+    statusEl.textContent = "The black hole claims you — game over.";
+    return;
+  }
+
+  game.mines = game.mines.filter((m) => !entityInsideBlackHoleSingularity(m.x, m.y, m.radius));
+  game.treasures = game.treasures.filter((t) => !entityInsideBlackHoleSingularity(t.x, t.y, t.radius));
+  game.bullets = game.bullets.filter((b) => !entityInsideBlackHoleSingularity(b.x, b.y, b.radius));
+  game.bossBullets = game.bossBullets.filter((b) => !entityInsideBlackHoleSingularity(b.x, b.y, b.radius));
+  game.explosions = game.explosions.filter(
+    (ex) => !entityInsideBlackHoleSingularity(ex.x, ex.y, Math.max(6, ex.radius * 0.25))
+  );
+
+  if (game.boss && !game.boss.dying && entityInsideBlackHoleSingularity(game.boss.x, game.boss.y, game.boss.radius)) {
+    defeatBoss();
+  }
 }
 
 function driftTreasuresTowardWell(dt) {
@@ -848,7 +985,9 @@ function driftTreasuresTowardWell(dt) {
 function overlapsSolidSphere(x, y, entityRadius) {
   if (!game.settings.spaceMode) return false;
   for (const gw of game.planets) {
-    if (Math.hypot(x - gw.x, y - gw.y) < gw.bodyRadius + entityRadius) return true;
+    const solid =
+      gw.kind === "blackHole" ? gw.consumeRadius : gw.bodyRadius ?? gw.consumeRadius ?? 0;
+    if (Math.hypot(x - gw.x, y - gw.y) < solid + entityRadius) return true;
   }
   return false;
 }
@@ -859,10 +998,12 @@ function resolveSolidSphere(e, entityRadius, reflectVel) {
   for (let pass = 0; pass < 3; pass += 1) {
     let moved = false;
     for (const gw of game.planets) {
+      if (gw.kind === "blackHole") continue;
       const dx = e.x - gw.x;
       const dy = e.y - gw.y;
       const dist = Math.hypot(dx, dy);
-      const minD = gw.bodyRadius + entityRadius + 0.5;
+      const br = gw.bodyRadius ?? 0;
+      const minD = br + entityRadius + 0.5;
       if (dist >= minD || dist < 1e-5) continue;
       moved = true;
       const nx = dx / dist;
@@ -1765,7 +1906,7 @@ function drawOneGravityWorld(gw) {
     ctx.arc(gw.x, gw.y, br, 0, Math.PI * 2);
     ctx.clip();
     for (let i = 0; i < bandCount; i += 1) {
-      const yy = gw.y - br * 0.95 + (i * br * 0.48);
+      const yy = gw.y - br * 0.95 + i * br * 0.48;
       ctx.globalAlpha = 0.14 + (i % 2) * 0.1;
       ctx.fillStyle = i % 2 ? st.dark : st.mid;
       ctx.beginPath();
@@ -1790,9 +1931,28 @@ function drawOneGravityWorld(gw) {
   ctx.restore();
 }
 
+/** Nearly invisible except a small bright accretion highlight at the singularity. */
+function drawBlackHole(bh) {
+  const cr = bh.consumeRadius;
+  ctx.save();
+  const g = ctx.createRadialGradient(bh.x, bh.y, 0, bh.x, bh.y, cr * 1.15);
+  g.addColorStop(0, "rgba(255,255,255,0.82)");
+  g.addColorStop(0.35, "rgba(230,235,248,0.28)");
+  g.addColorStop(0.7, "rgba(180,190,210,0.06)");
+  g.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(bh.x, bh.y, cr, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
 function drawGravityWell() {
   if (!game.settings.spaceMode) return;
-  for (const gw of game.planets) drawOneGravityWorld(gw);
+  for (const gw of game.planets) {
+    if (gw.kind === "blackHole") drawBlackHole(gw);
+    else drawOneGravityWorld(gw);
+  }
 }
 
 function drawBackground() {
@@ -2113,6 +2273,7 @@ function frame(ts) {
     handleBulletMineHits();
     updateBoss(dt);
     updateBossBullets(dt);
+    applyBlackHoleConsumption();
     handleCollisions();
     game.invuln -= dt;
     game.speedBoostTimer = Math.max(0, game.speedBoostTimer - dt);
@@ -2380,6 +2541,14 @@ function applyModeFromQueryString() {
     if (params.get("mode") === "water" || params.get("mode") === "sea") game.settings.spaceMode = false;
     if (params.get("size") === "large") game.settings.largeMode = true;
     if (params.get("size") === "small") game.settings.largeMode = false;
+    const sing = params.get("singularity");
+    if (sing === "true" || sing === "1" || sing === "yes") {
+      game.settings.singularity = true;
+      game.settings.spaceMode = true;
+    }
+    if (sing === "false" || sing === "0" || sing === "no") {
+      game.settings.singularity = false;
+    }
     const shipParam = params.get("ship");
     if (shipParam === "serenity" || shipParam === "firefly") game.settings.shipSkin = shipParam;
     const levelParam = params.get("level");
