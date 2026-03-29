@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0b2d4e" />
+    <meta name="theme-color" content="#050508" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Shipwreck</title>
@@ -22,9 +22,9 @@
       </header>
       <canvas id="game" width="960" height="640" aria-label="Dubloon Disaster game canvas"></canvas>
       <section class="controls ui-no-start">
-        <button id="largeModeBtn" type="button">Large Mode: Off</button>
+        <button id="largeModeBtn" type="button">Large Mode: On</button>
         <button id="worldModeBtn" type="button" title="World: Space = open sky/sea. World: Planets = stars, asteroids & gravity worlds.">
-          World: Space
+          World: Planets
         </button>
         <button id="restart" type="button">Restart</button>
       </section>
@@ -79,7 +79,7 @@
           Shockwaves
         </label>
         <label class="toggle">
-          <input id="mineChainToggle" type="checkbox" />
+          <input id="mineChainToggle" type="checkbox" checked />
           Mine Chain Blast
         </label>
         <label class="toggle">
@@ -87,7 +87,7 @@
           Pause between levels
         </label>
         <label class="toggle">
-          <input id="spaceModeToggle" type="checkbox" />
+          <input id="spaceModeToggle" type="checkbox" checked />
           Planets (stars, asteroids, gravity worlds)
         </label>
         <label class="toggle">

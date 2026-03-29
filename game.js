@@ -39,6 +39,15 @@ const mobileControlsEl = document.getElementById("mobileControls");
 const appEl = document.querySelector(".app");
 
 const WORLD = { width: canvas.width, height: canvas.height };
+
+/** Large canvas by default on desktop; off when touch-primary or narrow viewport. */
+function defaultLargeModeForDesktop() {
+  const touch = navigator.maxTouchPoints > 0;
+  const coarse = window.matchMedia("(pointer: coarse)").matches;
+  const narrow = window.innerWidth <= 900;
+  return !((coarse || narrow) && touch);
+}
+
 const BASE_HULL = 100;
 const MAX_HULL = 200;
 const MAX_SHIELD = 150;
@@ -83,15 +92,20 @@ const TUNING = {
 };
 
 /** Levels that trigger a boss encounter (interstitial + clear field + unique threat). */
-const BOSS_LEVELS = new Set([5]);
+const BOSS_LEVELS = new Set([5, 10]);
 
 function isBossLevel(level) {
   return BOSS_LEVELS.has(level);
 }
 
-/** Big vertical hop when the level 5 raider enters / leaves (other boss levels TBD). */
-function bossUsesLevel5JumpEffects() {
-  return game.level === 5;
+/** Mirror raider (levels 5 & 10): intro/outro jump + HP relocates. */
+function mirrorRaiderBossUsesJumpEffects() {
+  return game.level === 5 || game.level === 10;
+}
+
+/** Level 10 raider: triple forward burst (tier-2-style spread). */
+function mirrorRaiderBossUsesTripleForwardBurst() {
+  return game.level === 10;
 }
 
 // Hidden debug/nostalgia cheats (intentionally not shown in UI):
@@ -142,6 +156,18 @@ const SHIP_SKIN_OPTIONS = [
   { id: "serenity", label: "Serenity", rasterScale: 1 },
   { id: "firefly", label: "Firefly", rasterScale: 0.88 },
 ];
+
+function getShipSkinDisplayLabel() {
+  return SHIP_SKIN_OPTIONS.find((o) => o.id === game.settings.shipSkin)?.label ?? "Ship";
+}
+
+/** Boss encounter titles (use current ship skin label). */
+function getDarkBossEncounterTitle(level) {
+  const ship = getShipSkinDisplayLabel();
+  if (level === 5) return `Dark ${ship}`;
+  if (level === 10) return `Dark ${ship} — Slight Return`;
+  return `BOSS — Level ${level}`;
+}
 
 const TREASURE_TABLE = [
   { value: 10, weight: 38, life: 14.5, color: "#a76b2c", radius: 7 },
@@ -300,11 +326,11 @@ const game = {
   settings: {
     wrapWorld: false,
     shockwaves: true,
-    mineChainBlast: false,
+    mineChainBlast: true,
     pauseOnLevelUp: false,
-    spaceMode: false,
+    spaceMode: true,
     startLevel: 1,
-    largeMode: false,
+    largeMode: defaultLargeModeForDesktop(),
     cruiseThrottle: 0.82,
     shipSkin: "default",
   },
@@ -364,7 +390,7 @@ function resetGame() {
   game.bossIntroAfterStart = isBossLevel(startLevel);
   game.pendingBossSpawn = false;
   statusEl.textContent = game.bossIntroAfterStart
-    ? `Boss level ${startLevel} — click to start, then Space or tap to engage.`
+    ? `${getDarkBossEncounterTitle(startLevel)} — click to start, then Space or tap to engage.`
     : `Click anywhere to start. Starting at level ${startLevel}.`;
   if (mobileCruiseBtn) {
     mobileCruiseBtn.classList.remove("active");
@@ -614,55 +640,128 @@ function planetMetricsForWorld() {
   };
 }
 
+/** Greys, oranges, blues, etc. — `bands` draws extra gas-giant stripes when set. */
+const PLANET_STYLES = [
+  {
+    light: "#b8d8f0",
+    mid: "#4a78a8",
+    dark: "#142838",
+    accent: "#e8f8ff",
+    ring: "rgba(110, 170, 230, 0.42)",
+    bands: 0,
+  },
+  {
+    light: "#c8cad4",
+    mid: "#5c6070",
+    dark: "#1e2028",
+    accent: "#f0f2fa",
+    ring: "rgba(150, 155, 175, 0.36)",
+    bands: 0,
+  },
+  {
+    light: "#f0b090",
+    mid: "#b85830",
+    dark: "#381808",
+    accent: "#ffe8d8",
+    ring: "rgba(230, 120, 70, 0.4)",
+    bands: 0,
+  },
+  {
+    light: "#e8d098",
+    mid: "#987838",
+    dark: "#302010",
+    accent: "#fff8e0",
+    ring: "rgba(200, 170, 90, 0.34)",
+    bands: 0,
+  },
+  {
+    light: "#78c0e8",
+    mid: "#2878a8",
+    dark: "#082838",
+    accent: "#b8ecff",
+    ring: "rgba(80, 150, 220, 0.4)",
+    bands: 0,
+  },
+  {
+    light: "#d8c8a0",
+    mid: "#886848",
+    dark: "#281810",
+    accent: "#f8ecd0",
+    ring: "rgba(200, 150, 110, 0.36)",
+    bands: 4,
+  },
+];
+
+function pickRandomPlanetStyle() {
+  return PLANET_STYLES[Math.floor(Math.random() * PLANET_STYLES.length)];
+}
+
+/** Random scale 0.5×–2× on base template radii (clamped for layout). */
+function rollPlanetDimensions(baseM) {
+  const scale = rand(0.5, 2);
+  return {
+    pullRadius: clamp(baseM.pullRadius * scale, 62, 560),
+    bodyRadius: clamp(baseM.bodyRadius * scale, 9, 92),
+  };
+}
+
 function placePlanets(avoidPlayer) {
   game.planets = [];
   if (!game.settings.spaceMode) return;
-  const m = planetMetricsForWorld();
+  const baseM = planetMetricsForWorld();
   const dual =
     game.settings.largeMode && Math.random() < (game.settings.wrapWorld ? 0.38 : 0.45);
   const count = dual ? 2 : 1;
-  const minSep = m.pullRadius * 1.05 + m.bodyRadius * 2;
-  const margin = Math.max(72, m.pullRadius * 0.28);
 
-  const tryPush = (x, y) => {
+  const tryPush = (x, y, pullRadius, bodyRadius, planetStyle) => {
+    const margin = Math.max(56, pullRadius * 0.26);
     if (x < margin || x > WORLD.width - margin || y < margin || y > WORLD.height - margin) return false;
+    const avoidPlayerR = Math.max(110, pullRadius * 0.38);
     if (
       avoidPlayer &&
       game.player &&
-      Math.hypot(x - game.player.x, y - game.player.y) < 130
+      Math.hypot(x - game.player.x, y - game.player.y) < avoidPlayerR
     ) {
       return false;
     }
     for (const ex of game.planets) {
-      if (Math.hypot(x - ex.x, y - ex.y) < minSep) return false;
+      const sep = ex.pullRadius + pullRadius + (ex.bodyRadius + bodyRadius) * 1.12;
+      if (Math.hypot(x - ex.x, y - ex.y) < sep) return false;
     }
     game.planets.push({
       x,
       y,
-      pullRadius: m.pullRadius,
-      bodyRadius: m.bodyRadius,
+      pullRadius,
+      bodyRadius,
+      planetStyle,
     });
     return true;
   };
 
   for (let n = 0; n < count; n += 1) {
     let placed = false;
-    for (let k = 0; k < 48; k += 1) {
+    for (let k = 0; k < 56; k += 1) {
+      const dims = rollPlanetDimensions(baseM);
+      const planetStyle = pickRandomPlanetStyle();
+      const margin = Math.max(56, dims.pullRadius * 0.26);
       const x = rand(margin, WORLD.width - margin);
       const y = rand(margin, WORLD.height - margin);
-      if (tryPush(x, y)) {
+      if (tryPush(x, y, dims.pullRadius, dims.bodyRadius, planetStyle)) {
         placed = true;
         break;
       }
     }
     if (!placed) {
+      const dims = rollPlanetDimensions(baseM);
+      const planetStyle = pickRandomPlanetStyle();
       const fx = n === 0 ? 0.28 : 0.72;
       const fy = n === 0 ? 0.35 : 0.62;
       game.planets.push({
         x: WORLD.width * fx,
         y: WORLD.height * fy,
-        pullRadius: m.pullRadius,
-        bodyRadius: m.bodyRadius,
+        pullRadius: dims.pullRadius,
+        bodyRadius: dims.bodyRadius,
+        planetStyle,
       });
     }
   }
@@ -1220,7 +1319,7 @@ function spawnBossMirrorRaider() {
     ? game.settings.shipSkin
     : "default";
   loadRasterShipAssets();
-  const useJump = bossUsesLevel5JumpEffects();
+  const useJump = mirrorRaiderBossUsesJumpEffects();
   const baseY = WORLD.height * 0.14;
   const appearJump = useJump
     ? Math.min(150, WORLD.height * TUNING.bossAppearJumpHeightFrac)
@@ -1255,10 +1354,11 @@ function defeatBoss() {
   game.boss = null;
   game.bossBullets = [];
   const collectSec = TUNING.postBossLevel5CollectSeconds;
-  if (levelWhenKilled === 5) {
+  if (levelWhenKilled === 5 || levelWhenKilled === 10) {
     game.levelTimer = Math.max(0, TUNING.levelStepSeconds - collectSec);
+    const title = getDarkBossEncounterTitle(levelWhenKilled);
     addOverlay(`Raider destroyed +${bonus} — ~${collectSec}s to loot!`, "#a9ffbc");
-    statusEl.textContent = `Level 5 clearing in ~${collectSec}s — grab what you can! (+${bonus})`;
+    statusEl.textContent = `${title} cleared — ~${collectSec}s to loot. (+${bonus})`;
   } else {
     game.levelTimer = 0;
     addOverlay(`Raider destroyed +${bonus}`, "#a9ffbc");
@@ -1339,17 +1439,33 @@ function updateBoss(dt) {
   }
   boss.shootCd -= dt;
   if (boss.shootCd <= 0) {
-    const dir = Math.cos(boss.angle) >= 0 ? 1 : -1;
     const bs = 440;
-    game.bossBullets.push({
-      x: boss.x + dir * (boss.radius + 8),
-      y: boss.y,
-      vx: dir * bs,
-      vy: 0,
-      radius: 4,
-      life: 2.8,
-    });
-    boss.shootCd = rand(0.42, 0.78);
+    const spread = 0.2;
+    if (mirrorRaiderBossUsesTripleForwardBurst()) {
+      for (const da of [-spread, 0, spread]) {
+        const ang = boss.angle + da;
+        game.bossBullets.push({
+          x: boss.x + Math.cos(ang) * (boss.radius + 8),
+          y: boss.y + Math.sin(ang) * (boss.radius + 8),
+          vx: Math.cos(ang) * bs,
+          vy: Math.sin(ang) * bs,
+          radius: 4,
+          life: 2.8,
+        });
+      }
+      boss.shootCd = rand(0.48, 0.9);
+    } else {
+      const dir = Math.cos(boss.angle) >= 0 ? 1 : -1;
+      game.bossBullets.push({
+        x: boss.x + dir * (boss.radius + 8),
+        y: boss.y,
+        vx: dir * bs,
+        vy: 0,
+        radius: 4,
+        life: 2.8,
+      });
+      boss.shootCd = rand(0.42, 0.78);
+    }
   }
 }
 
@@ -1409,7 +1525,7 @@ function handlePlayerBulletsVsBoss() {
       alive[bi] = false;
       boss.hp -= 1;
       if (boss.hp <= 0) {
-        if (bossUsesLevel5JumpEffects()) {
+        if (mirrorRaiderBossUsesJumpEffects()) {
           boss.dying = true;
           boss.exitAnimT = 0;
           game.bossBullets = [];
@@ -1427,7 +1543,7 @@ function handlePlayerBulletsVsBoss() {
 
 /** Level 5: up to three combat jumps as HP crosses each remaining-HP threshold. */
 function maybeTriggerBossHpRelocate(boss) {
-  if (!bossUsesLevel5JumpEffects() || boss.dying || boss.relocJump) return;
+  if (!mirrorRaiderBossUsesJumpEffects() || boss.dying || boss.relocJump) return;
   const fracs = TUNING.bossRelocateRemainingFracs;
   if (boss.relocStage >= fracs.length) return;
   if (boss.hp >= boss.maxHp * fracs[boss.relocStage]) return;
@@ -1520,8 +1636,8 @@ function updateDifficulty(dt) {
         game.pendingBossSpawn = true;
         game.paused = true;
         game.awaitingLevelContinue = true;
-        statusEl.textContent = `BOSS — Level ${game.level}. Space or tap to engage.`;
-        addOverlay("Mirror raider", "#ffb08a");
+        statusEl.textContent = `${getDarkBossEncounterTitle(game.level)} — Space or tap to engage.`;
+        addOverlay(getDarkBossEncounterTitle(game.level), "#ffb08a");
       } else if (game.settings.pauseOnLevelUp) {
         game.paused = true;
         game.awaitingLevelContinue = true;
@@ -1616,28 +1732,60 @@ function drawSpaceField() {
 
 function drawOneGravityWorld(gw) {
   const br = gw.bodyRadius;
+  const st = gw.planetStyle || PLANET_STYLES[0];
   ctx.save();
-  ctx.globalAlpha = 0.22;
-  ctx.strokeStyle = "#7b6cff";
+  ctx.globalAlpha = 0.2;
+  ctx.strokeStyle = st.ring;
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.arc(gw.x, gw.y, gw.pullRadius, 0, Math.PI * 2);
   ctx.stroke();
-  ctx.globalAlpha = 0.12;
+  ctx.globalAlpha = 0.11;
   ctx.beginPath();
-  ctx.arc(gw.x, gw.y, gw.pullRadius * 0.55, 0, Math.PI * 2);
+  ctx.arc(gw.x, gw.y, gw.pullRadius * 0.52, 0, Math.PI * 2);
   ctx.stroke();
   ctx.globalAlpha = 1;
-  const g = ctx.createRadialGradient(gw.x - br * 0.35, gw.y - br * 0.35, br * 0.1, gw.x, gw.y, br);
-  g.addColorStop(0, "#9aaee8");
-  g.addColorStop(0.45, "#4a5a9a");
-  g.addColorStop(1, "#1c1f3a");
+
+  const lx = gw.x - br * 0.38;
+  const ly = gw.y - br * 0.4;
+  const g = ctx.createRadialGradient(lx, ly, br * 0.06, gw.x, gw.y, br);
+  g.addColorStop(0, st.accent);
+  g.addColorStop(0.28, st.light);
+  g.addColorStop(0.58, st.mid);
+  g.addColorStop(1, st.dark);
   ctx.fillStyle = g;
   ctx.beginPath();
   ctx.arc(gw.x, gw.y, br, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = "rgba(200,210,255,0.35)";
+
+  const bandCount = st.bands || 0;
+  if (bandCount > 0) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(gw.x, gw.y, br, 0, Math.PI * 2);
+    ctx.clip();
+    for (let i = 0; i < bandCount; i += 1) {
+      const yy = gw.y - br * 0.95 + (i * br * 0.48);
+      ctx.globalAlpha = 0.14 + (i % 2) * 0.1;
+      ctx.fillStyle = i % 2 ? st.dark : st.mid;
+      ctx.beginPath();
+      ctx.ellipse(gw.x, yy, br * 1.25, br * 0.2, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  ctx.globalAlpha = 0.48;
+  ctx.strokeStyle = st.light;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(gw.x - br * 0.22, gw.y - br * 0.32, br * 0.2, 0.5, 2.2);
+  ctx.stroke();
+  ctx.globalAlpha = 0.32;
+  ctx.strokeStyle = st.accent;
   ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(gw.x, gw.y, br, 0, Math.PI * 2);
   ctx.stroke();
   ctx.restore();
 }
@@ -2007,10 +2155,16 @@ function frame(ts) {
       ctx.font = "bold 38px Trebuchet MS";
       const bossIntro = game.pendingBossSpawn && isBossLevel(game.level);
       if (bossIntro) {
-        ctx.fillText(`BOSS — LEVEL ${game.level}`, WORLD.width * 0.5, WORLD.height * 0.44);
+        const bt = getDarkBossEncounterTitle(game.level);
+        ctx.font = bt.length > 36 ? "bold 28px Trebuchet MS" : "bold 34px Trebuchet MS";
+        ctx.fillText(bt, WORLD.width * 0.5, WORLD.height * 0.42);
         ctx.font = "20px Trebuchet MS";
-        ctx.fillText("Your twin hunts the horizon — mines keep spawning.", WORLD.width * 0.5, WORLD.height * 0.51);
-        ctx.fillText("Blast the raider. Space or tap to engage.", WORLD.width * 0.5, WORLD.height * 0.57);
+        const sub =
+          game.level === 10
+            ? "Triple forward bolts — your twin hunts the horizon. Mines keep spawning."
+            : "Your twin hunts the horizon — mines keep spawning.";
+        ctx.fillText(sub, WORLD.width * 0.5, WORLD.height * 0.5);
+        ctx.fillText("Blast the raider. Space or tap to engage.", WORLD.width * 0.5, WORLD.height * 0.56);
       } else {
         ctx.fillText(`LEVEL ${game.level}`, WORLD.width * 0.5, WORLD.height * 0.46);
         ctx.font = "20px Trebuchet MS";
@@ -2129,8 +2283,8 @@ window.addEventListener("click", (e) => {
       game.pendingBossSpawn = true;
       game.bossIntroAfterStart = false;
       game.lastTs = performance.now();
-      addOverlay("Mirror raider", "#ffb08a");
-      statusEl.textContent = `BOSS — Level ${game.level}. Space or tap to engage.`;
+      addOverlay(getDarkBossEncounterTitle(game.level), "#ffb08a");
+      statusEl.textContent = `${getDarkBossEncounterTitle(game.level)} — Space or tap to engage.`;
       return;
     }
     game.started = true;
@@ -2223,7 +2377,9 @@ function applyModeFromQueryString() {
   try {
     const params = new URLSearchParams(window.location.search);
     if (params.get("mode") === "space") game.settings.spaceMode = true;
+    if (params.get("mode") === "water" || params.get("mode") === "sea") game.settings.spaceMode = false;
     if (params.get("size") === "large") game.settings.largeMode = true;
+    if (params.get("size") === "small") game.settings.largeMode = false;
     const shipParam = params.get("ship");
     if (shipParam === "serenity" || shipParam === "firefly") game.settings.shipSkin = shipParam;
     const levelParam = params.get("level");
