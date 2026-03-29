@@ -20,7 +20,21 @@
         </div>
         <button id="settingsBtn" class="icon-btn" type="button" aria-label="Open settings">⚙</button>
       </header>
-      <canvas id="game" width="960" height="640" aria-label="Dubloon Disaster game canvas"></canvas>
+      <div class="canvas-stack">
+        <canvas id="game" width="960" height="640" aria-label="Dubloon Disaster game canvas"></canvas>
+        <div
+          id="gravSingularityWarn"
+          class="grav-singularity-warn"
+          hidden
+          aria-live="polite"
+          aria-hidden="true"
+        >
+          <div class="grav-singularity-warn__panel">
+            <span class="grav-singularity-warn__label">Warning</span>
+            <span class="grav-singularity-warn__text">Strong gravitational forces detected</span>
+          </div>
+        </div>
+      </div>
       <section class="controls ui-no-start">
         <button id="largeModeBtn" type="button">Large Mode: On</button>
         <button id="worldModeBtn" type="button" title="World: Space = open sky/sea. World: Planets = stars, asteroids & gravity worlds.">
