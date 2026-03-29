@@ -56,16 +56,21 @@ const DEFAULT_CANVAS_WIDTH = 960;
 const DEFAULT_CANVAS_HEIGHT = 640;
 
 const TUNING = {
-  levelStepSeconds: 40,
+  /** Seconds of normal play before the level index advances (boss / pauses not counted). */
+  levelStepSeconds: 80,
   mysteryCapBase: 3,
   mysteryCapPerThousand: 3,
+  /** From this level, mystery pickup budget resets each level (~drops per level segment). */
+  mysteryLevel16Threshold: 16,
+  mysteryCapLevel16Plus: 5,
   mineMinSpawnDistance: 180,
-  mineSpawnIntervalMax: 2.9,
-  mineSpawnIntervalMin: 0.85,
-  mineSpawnIntervalPerLevel: 0.16,
-  treasureSpawnIntervalMax: 1.5,
-  treasureSpawnIntervalMin: 0.7,
-  treasureSpawnIntervalPerLevel: 0.05,
+  /** Scaled with `levelStepSeconds` so mine density per level stays similar when level length changes. */
+  mineSpawnIntervalMax: 5.8,
+  mineSpawnIntervalMin: 1.7,
+  mineSpawnIntervalPerLevel: 0.32,
+  treasureSpawnIntervalMax: 3.0,
+  treasureSpawnIntervalMin: 1.4,
+  treasureSpawnIntervalPerLevel: 0.1,
   /** Black hole core radius is random up to this × scaled planet body radius (same scale as classic worlds). */
   blackHoleSingularityMaxFracOfPlanetBody: 0.75,
   /** Lower bound for singularity roll, as a fraction of that max (keeps a visible floor). */
@@ -75,10 +80,13 @@ const TUNING = {
   /** Per gravity slot: chance that world is a black hole instead of a planet (ignored if settings.singularity). */
   blackHoleSpawnChance: 0.14,
   /** Boss fight: modest extra loot (keep below normal spam). */
-  bossTreasureSpawnMin: 0.88,
-  bossTreasureSpawnMax: 1.35,
-  bossMysterySpawnMin: 7.5,
-  bossMysterySpawnMax: 12.5,
+  bossTreasureSpawnMin: 1.76,
+  bossTreasureSpawnMax: 2.7,
+  bossMysterySpawnMin: 15,
+  bossMysterySpawnMax: 25,
+  /** Between mystery pickup spawns (non-boss); scaled with longer levels. */
+  mysterySpawnIntervalMin: 21,
+  mysterySpawnIntervalMax: 31,
   /** Extra mystery prizes allowed while a boss is active (on top of normal cap). */
   bossMysteryExtraCap: 6,
   /** Virtual level boost when rolling treasure tiers during a boss. */
@@ -94,27 +102,38 @@ const TUNING = {
   /** Prefer a vertical shift at least this tall (fraction of world height) when possible. */
   bossRelocateYMinDeltaFrac: 0.055,
   /** Level 5: seconds of loot time after the raider dies, then the level timer hits and you advance. */
-  postBossLevel5CollectSeconds: 7,
+  /** Loot window after mirror raider; scaled with `levelStepSeconds`. */
+  postBossLevel5CollectSeconds: 14,
+  /**
+   * Shield repair from scoring: shield units added per point gained (not massive; tied to haul size).
+   * e.g. 0.012 → +12 shield per 1000 score while shield is below max.
+   */
+  shieldRegenPerScorePoint: 0.012,
   /** Level 5 mirror raider: intro/outro vertical jump (fraction of world height). */
   bossAppearJumpHeightFrac: 0.2,
   bossExitJumpHeightFrac: 0.24,
 };
 
 /** Levels that trigger a boss encounter (interstitial + clear field + unique threat). */
-const BOSS_LEVELS = new Set([5, 10]);
+const BOSS_LEVELS = new Set([5, 10, 15]);
 
 function isBossLevel(level) {
   return BOSS_LEVELS.has(level);
 }
 
-/** Mirror raider (levels 5 & 10): intro/outro jump + HP relocates. */
+/** Mirror raider (levels 5, 10 & 15): intro/outro jump + HP relocates. */
 function mirrorRaiderBossUsesJumpEffects() {
-  return game.level === 5 || game.level === 10;
+  return game.level === 5 || game.level === 10 || game.level === 15;
 }
 
 /** Level 10 raider: triple forward burst (tier-2-style spread). */
 function mirrorRaiderBossUsesTripleForwardBurst() {
   return game.level === 10;
+}
+
+/** Level 15 raider: same triple forward as 10, plus triple backward. */
+function mirrorRaiderBossUsesTripleForwardAndBackwardBurst() {
+  return game.level === 15;
 }
 
 // Hidden debug/nostalgia cheats (intentionally not shown in UI):
@@ -175,6 +194,7 @@ function getDarkBossEncounterTitle(level) {
   const ship = getShipSkinDisplayLabel();
   if (level === 5) return `Dark ${ship}`;
   if (level === 10) return `Dark ${ship} — Slight Return`;
+  if (level === 15) return `Dark ${ship} — Crossfire`;
   return `BOSS — Level ${level}`;
 }
 
@@ -298,6 +318,8 @@ const game = {
   mines: [],
   treasures: [],
   score: 0,
+  /** Last score used for shield regen from points (see `applyShieldRegenFromScoreDelta`). */
+  prevScoreForShieldRegen: 0,
   hull: BASE_HULL,
   level: 1,
   gameOver: false,
@@ -374,12 +396,13 @@ function resetGame() {
   game.mines = [];
   game.treasures = [];
   game.score = 0;
+  game.prevScoreForShieldRegen = 0;
   game.hull = BASE_HULL;
   game.level = startLevel;
   game.gameOver = false;
   game.invuln = 0;
   game.explosions = [];
-  game.mysterySpawnTimer = 9.5;
+  game.mysterySpawnTimer = 19;
   game.mysteryAwarded = 0;
   game.speedBoostTimer = 0;
   game.immunityTimer = 0;
@@ -395,8 +418,8 @@ function resetGame() {
   game.awaitingLevelContinue = false;
   game.mobileCruise = false;
   cheatBuffer = "";
-  game.mineSpawnTimer = 0.6;
-  game.treasureSpawnTimer = 1.2;
+  game.mineSpawnTimer = 1.2;
+  game.treasureSpawnTimer = 2.4;
   game.levelTimer = 0;
   game.lastTs = performance.now();
   game.boss = null;
@@ -1397,7 +1420,16 @@ function applyShockwaveEffects(dt) {
 }
 
 function getMysteryPrizeCap() {
+  if (game.level >= TUNING.mysteryLevel16Threshold) return TUNING.mysteryCapLevel16Plus;
   return TUNING.mysteryCapBase + Math.floor(game.score / 1000) * TUNING.mysteryCapPerThousand;
+}
+
+/** Slow shield repair: scales with score gained this frame (treasure, boss bonus, etc.). */
+function applyShieldRegenFromScoreDelta(dScore) {
+  if (dScore <= 0 || game.shield >= MAX_SHIELD) return;
+  const add = dScore * TUNING.shieldRegenPerScorePoint;
+  if (add <= 0) return;
+  game.shield = Math.min(MAX_SHIELD, game.shield + add);
 }
 
 /** Effective cap for spawning mystery pickups (higher during boss brawls). */
@@ -1536,8 +1568,8 @@ function spawnBossMirrorRaider() {
     hp: 14,
     shootCd: useJump ? 999 : 0.35,
   };
-  game.treasureSpawnTimer = 0.95;
-  game.mysterySpawnTimer = 6.5;
+  game.treasureSpawnTimer = 1.9;
+  game.mysterySpawnTimer = 13;
 }
 
 function defeatBoss() {
@@ -1547,7 +1579,7 @@ function defeatBoss() {
   game.boss = null;
   game.bossBullets = [];
   const collectSec = TUNING.postBossLevel5CollectSeconds;
-  if (levelWhenKilled === 5 || levelWhenKilled === 10) {
+  if (levelWhenKilled === 5 || levelWhenKilled === 10 || levelWhenKilled === 15) {
     game.levelTimer = Math.max(0, TUNING.levelStepSeconds - collectSec);
     const title = getDarkBossEncounterTitle(levelWhenKilled);
     addOverlay(`Raider destroyed +${bonus} — ~${collectSec}s to loot!`, "#a9ffbc");
@@ -1563,7 +1595,7 @@ function defeatBoss() {
     TUNING.treasureSpawnIntervalMax
   );
   game.treasureSpawnTimer = treasureInterval * 0.5;
-  game.mysterySpawnTimer = rand(10.5, 15.5);
+  game.mysterySpawnTimer = rand(TUNING.mysterySpawnIntervalMin, TUNING.mysterySpawnIntervalMax);
   updateHud();
 }
 
@@ -1634,9 +1666,9 @@ function updateBoss(dt) {
   if (boss.shootCd <= 0) {
     const bs = 440;
     const spread = 0.2;
-    if (mirrorRaiderBossUsesTripleForwardBurst()) {
+    const pushBurst = (baseAng) => {
       for (const da of [-spread, 0, spread]) {
-        const ang = boss.angle + da;
+        const ang = baseAng + da;
         game.bossBullets.push({
           x: boss.x + Math.cos(ang) * (boss.radius + 8),
           y: boss.y + Math.sin(ang) * (boss.radius + 8),
@@ -1646,6 +1678,13 @@ function updateBoss(dt) {
           life: 2.8,
         });
       }
+    };
+    if (mirrorRaiderBossUsesTripleForwardAndBackwardBurst()) {
+      pushBurst(boss.angle);
+      pushBurst(boss.angle + Math.PI);
+      boss.shootCd = rand(0.48, 0.9);
+    } else if (mirrorRaiderBossUsesTripleForwardBurst()) {
+      pushBurst(boss.angle);
       boss.shootCd = rand(0.48, 0.9);
     } else {
       const dir = Math.cos(boss.angle) >= 0 ? 1 : -1;
@@ -1823,6 +1862,9 @@ function updateDifficulty(dt) {
     if (game.levelTimer >= TUNING.levelStepSeconds) {
       game.level += 1;
       game.levelTimer = 0;
+      if (game.level >= TUNING.mysteryLevel16Threshold) {
+        game.mysteryAwarded = 0;
+      }
 
       if (isBossLevel(game.level)) {
         clearFieldForBoss();
@@ -1883,7 +1925,7 @@ function updateDifficulty(dt) {
     if (game.mysterySpawnTimer <= 0) {
       const cap = getMysteryPrizeCap();
       if (game.mysteryAwarded < cap) spawnMysteryPrize();
-      game.mysterySpawnTimer = rand(10.5, 15.5);
+      game.mysterySpawnTimer = rand(TUNING.mysterySpawnIntervalMin, TUNING.mysterySpawnIntervalMax);
     }
   }
 }
@@ -2327,6 +2369,9 @@ function frame(ts) {
     updateBossBullets(dt);
     applyBlackHoleConsumption();
     handleCollisions();
+    const dScore = game.score - game.prevScoreForShieldRegen;
+    if (dScore > 0) applyShieldRegenFromScoreDelta(dScore);
+    game.prevScoreForShieldRegen = game.score;
     game.invuln -= dt;
     game.speedBoostTimer = Math.max(0, game.speedBoostTimer - dt);
     game.immunityTimer = Math.max(0, game.immunityTimer - dt);
@@ -2373,9 +2418,11 @@ function frame(ts) {
         ctx.fillText(bt, WORLD.width * 0.5, WORLD.height * 0.42);
         ctx.font = "20px Trebuchet MS";
         const sub =
-          game.level === 10
-            ? "Triple forward bolts — your twin hunts the horizon. Mines keep spawning."
-            : "Your twin hunts the horizon — mines keep spawning.";
+          game.level === 15
+            ? "Triple bolts fore and aft — your twin seals both lanes. Mines keep spawning."
+            : game.level === 10
+              ? "Triple forward bolts — your twin hunts the horizon. Mines keep spawning."
+              : "Your twin hunts the horizon — mines keep spawning.";
         ctx.fillText(sub, WORLD.width * 0.5, WORLD.height * 0.5);
         ctx.fillText("Blast the raider. Space or tap to engage.", WORLD.width * 0.5, WORLD.height * 0.56);
       } else {
