@@ -110,7 +110,7 @@ const TUNING = {
   /** Non-boss mystery spawn attempts (~classic cadence so upgrades stay visible during long levels). */
   mysterySpawnIntervalMin: 10.5,
   mysterySpawnIntervalMax: 15.5,
-  /** Cruising (casual, Sea or Planets): mine spawn interval multiplier (50% slower → 1.5× spacing). */
+  /** Cruising (casual, Space or Planets): mine spawn interval multiplier (50% slower → 1.5× spacing). */
   cruisingMineSpawnIntervalMultiplier: 1.5,
   /** Cruising: forward/reverse thrust acceleration multiplier. */
   cruisingAccelScale: 0.5,
@@ -436,7 +436,7 @@ const game = {
    * If false: mostly classic planets; black holes appear randomly (see TUNING.blackHoleSpawnChance).
    */
     singularity: false,
-    /** Sea or Planets: easier mines & gentler thrust (see `isCruisingWorld`). */
+    /** Space or Planets: easier mines & gentler thrust (see `isCruisingWorld`). */
     cruisingMode: false,
     /** Random ISS-style station in planets mode (see `spaceStationToggle` / `?station=`). */
     spaceStationsEnabled: false,
@@ -451,7 +451,7 @@ function getStartLevel() {
   return clamp(Math.floor(game.settings.startLevel || 1), 1, 99);
 }
 
-/** Cruising (casual): slower mines & softer thrust — works in Sea (open water) or Planets. */
+/** Cruising (casual): slower mines & softer thrust — works in Space (open sky) or Planets. */
 function isCruisingWorld() {
   return game.settings.cruisingMode === true;
 }
@@ -563,10 +563,10 @@ function syncSpaceModeChrome() {
     spaceStationToggleEl.checked = game.settings.spaceStationsEnabled;
   }
   if (worldModeBtn) {
-    worldModeBtn.textContent = game.settings.spaceMode ? "World: Planets" : "World: Sea";
+    worldModeBtn.textContent = game.settings.spaceMode ? "World: Planets" : "World: Space";
     worldModeBtn.title = game.settings.cruisingMode
-      ? "Sea or Planets with Cruising on (slower mines, softer thrust). Click to switch Sea ↔ Planets."
-      : "Toggle Sea (open water) ↔ Planets (stars & gravity). Use Cruising in settings for a gentler pace in either.";
+      ? "Space or Planets with Cruising on (slower mines, softer thrust). Click to switch Space ↔ Planets."
+      : "Toggle Space (open sky) ↔ Planets (stars & gravity). Use Cruising in settings for a gentler pace in either.";
   }
 }
 
@@ -1819,7 +1819,7 @@ function applyMysteryPowerup() {
     const repairPowers = [25, 50, 100];
     const heal = repairPowers[Math.floor(rand(0, repairPowers.length))];
     if (game.hull >= MAX_HULL) {
-      const pts = Math.round(333 * TUNING.economyScoreMultiplier);
+      const pts = 333;
       game.score += pts;
       statusEl.textContent = `Mystery prize: hull maxed, +${pts} points.`;
       addOverlay(`POWERUP: Bonus +${pts}`, "#f2e2a0");
@@ -1856,7 +1856,7 @@ function applyMysteryPowerup() {
     statusEl.textContent = "Mystery prize: rear blaster batteries!";
     addOverlay("POWERUP: Blaster Aft", "#ffc38d");
   } else {
-    const pts = Math.round(200 * TUNING.economyScoreMultiplier);
+    const pts = 200;
     game.score += pts;
     statusEl.textContent = `Mystery prize: blaster maxed — +${pts} points!`;
     addOverlay(`POWERUP: Bonus +${pts}`, "#f2e2a0");
@@ -2832,6 +2832,11 @@ function frame(ts) {
     ctx.textAlign = "center";
     ctx.font = "bold 40px Trebuchet MS";
     ctx.fillText("CLICK ANYWHERE TO START", WORLD.width * 0.5, WORLD.height * 0.45);
+    ctx.font = "18px Trebuchet MS";
+    ctx.fillStyle = "#d6f0ff";
+    ctx.fillText("Turn: A/D or Left/Right | Thrust: W or Up | Reverse: S or Down", WORLD.width * 0.5, WORLD.height * 0.58);
+    ctx.fillText("Fire: F/Enter | Jump: G | Pause/Resume: Space", WORLD.width * 0.5, WORLD.height * 0.64);
+    ctx.fillText("Dock: fly into station ring (auto) | Undock: Esc", WORLD.width * 0.5, WORLD.height * 0.70);
   }
 
   requestAnimationFrame(frame);
@@ -2867,18 +2872,24 @@ if (levelPauseToggleEl) {
 if (spaceModeToggleEl) {
   spaceModeToggleEl.addEventListener("change", () => {
     game.settings.spaceMode = spaceModeToggleEl.checked;
+    if (game.settings.spaceMode && game.settings.shipSkin === "default") {
+      game.settings.shipSkin = "serenity";
+      normalizeShipSkin();
+      loadRasterShipAssets();
+      if (shipSkinSelectEl) shipSkinSelectEl.value = game.settings.shipSkin;
+    }
     resetGame();
     const cruiseNote = game.settings.cruisingMode ? " Cruising on (slower mines, softer thrust)." : "";
     statusEl.textContent = game.settings.spaceMode
       ? `Planets: stars, asteroids & gravity worlds.${cruiseNote}`
-      : `Sea: open water.${cruiseNote}`;
+      : `Space: open sky.${cruiseNote}`;
   });
 }
 if (cruisingToggleEl) {
   cruisingToggleEl.addEventListener("change", () => {
     game.settings.cruisingMode = cruisingToggleEl.checked;
     syncSpaceModeChrome();
-    const where = game.settings.spaceMode ? "Planets" : "Sea";
+    const where = game.settings.spaceMode ? "Planets" : "Space";
     statusEl.textContent = game.settings.cruisingMode
       ? `Cruising on — ${where}: slower mines, softer thrust.`
       : `Cruising off — ${where} difficulty.`;
@@ -2905,11 +2916,17 @@ if (stationLeaveBtn) stationLeaveBtn.addEventListener("click", () => leaveStatio
 if (worldModeBtn) {
   worldModeBtn.addEventListener("click", () => {
     game.settings.spaceMode = !game.settings.spaceMode;
+    if (game.settings.spaceMode && game.settings.shipSkin === "default") {
+      game.settings.shipSkin = "serenity";
+      normalizeShipSkin();
+      loadRasterShipAssets();
+      if (shipSkinSelectEl) shipSkinSelectEl.value = game.settings.shipSkin;
+    }
     resetGame();
     const cruiseNote = game.settings.cruisingMode ? " Cruising on." : "";
     statusEl.textContent = game.settings.spaceMode
       ? `Planets: stars, asteroids & gravity worlds.${cruiseNote}`
-      : `Sea: open water.${cruiseNote}`;
+      : `Space: open sky.${cruiseNote}`;
   });
 }
 if (shipSkinSelectEl) {
@@ -3137,6 +3154,9 @@ function initShipSkinSelect() {
 }
 
 applyModeFromQueryString();
+if (game.settings.spaceMode && game.settings.shipSkin === "default") {
+  game.settings.shipSkin = "serenity";
+}
 normalizeShipSkin();
 initShipSkinSelect();
 loadRasterShipAssets();
