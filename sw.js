@@ -1,4 +1,4 @@
-const CACHE_NAME = "shipwreck-v3";
+const CACHE_NAME = "shipwreck-v4";
 const CORE_ASSETS = [
   "./",
   "./index.html",
@@ -7,6 +7,7 @@ const CORE_ASSETS = [
   "./manifest.webmanifest",
   "./assets/serenity.svg",
   "./assets/firefly.svg",
+  "./assets/iss-station.svg",
 ];
 
 self.addEventListener("install", (event) => {

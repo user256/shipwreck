@@ -4,6 +4,7 @@ const ctx = canvas.getContext("2d");
 /** Raster ship skins; loaded on demand when selected. */
 let serenityShipImg = null;
 let fireflyShipImg = null;
+let issStationImg = null;
 const scoreEl = document.getElementById("score");
 const levelEl = document.getElementById("level");
 const hullEl = document.getElementById("hull");
@@ -15,6 +16,7 @@ const shockwaveToggleEl = document.getElementById("shockwaveToggle");
 const mineChainToggleEl = document.getElementById("mineChainToggle");
 const levelPauseToggleEl = document.getElementById("levelPauseToggle");
 const spaceModeToggleEl = document.getElementById("spaceModeToggle");
+const cruisingToggleEl = document.getElementById("cruisingToggle");
 const startLevelInputEl = document.getElementById("startLevelInput");
 const startAtBtn = document.getElementById("startAtBtn");
 const cruiseSpeedInputEl = document.getElementById("cruiseSpeedInput");
@@ -28,6 +30,12 @@ const settingsBackdropEl = document.getElementById("settingsBackdrop");
 const settingsCloseBtn = document.getElementById("settingsCloseBtn");
 const shipSkinSelectEl = document.getElementById("shipSkinSelect");
 const gravSingularityWarnEl = document.getElementById("gravSingularityWarn");
+const spaceStationToggleEl = document.getElementById("spaceStationToggle");
+const stationDockPanelEl = document.getElementById("stationDockPanel");
+const stationHullBtn = document.getElementById("stationHullBtn");
+const stationShieldBtn = document.getElementById("stationShieldBtn");
+const stationBlasterBtn = document.getElementById("stationBlasterBtn");
+const stationLeaveBtn = document.getElementById("stationLeaveBtn");
 const mobileLeftBtn = document.getElementById("mobileLeftBtn");
 const mobileDpadUpBtn = document.getElementById("mobileDpadUpBtn");
 const mobileRightBtn = document.getElementById("mobileRightBtn");
@@ -51,7 +59,12 @@ function defaultLargeModeForDesktop() {
 
 const BASE_HULL = 100;
 const MAX_HULL = 200;
-const MAX_SHIELD = 150;
+/** Shield capacity in % (0–200). Power-ups can charge to full; regen/heal only refill up to `SHIELD_REGEN_CAP`. */
+const MAX_SHIELD = 200;
+/** Score-based shield repair and passive healing stop here; use mystery shield pickups to reach `MAX_SHIELD`. */
+const SHIELD_REGEN_CAP = 100;
+/** Mystery shield prize: always at least this % after pickup (if you were below), and stacks toward max. */
+const SHIELD_POWERUP_MIN_AFTER = 100;
 const DEFAULT_CANVAS_WIDTH = 960;
 const DEFAULT_CANVAS_HEIGHT = 640;
 
@@ -59,10 +72,19 @@ const TUNING = {
   /** Seconds of normal play before the level index advances (boss / pauses not counted). */
   levelStepSeconds: 80,
   mysteryCapBase: 3,
-  mysteryCapPerThousand: 3,
+  /**
+   * Extra mystery slots per `mysteryCapScoreStep` score (cap still modest; unlocks faster than every 1000 pts).
+   */
+  mysteryCapScoreStep: 500,
+  mysteryCapPerScoreStep: 2,
   /** From this level, mystery pickup budget resets each level (~drops per level segment). */
   mysteryLevel16Threshold: 16,
   mysteryCapLevel16Plus: 5,
+  /**
+   * Applied to coin pickups, boss defeat score, and mystery cash prizes — longer levels reward more points
+   * without raising how many upgrade pickups can spawn.
+   */
+  economyScoreMultiplier: 2,
   mineMinSpawnDistance: 180,
   /** Scaled with `levelStepSeconds` so mine density per level stays similar when level length changes. */
   mineSpawnIntervalMax: 5.8,
@@ -79,16 +101,21 @@ const TUNING = {
   blackHoleSingularityAbsFloor: 4,
   /** Per gravity slot: chance that world is a black hole instead of a planet (ignored if settings.singularity). */
   blackHoleSpawnChance: 0.14,
-  /** Boss fight: modest extra loot (keep below normal spam). */
-  bossTreasureSpawnMin: 1.76,
-  bossTreasureSpawnMax: 2.7,
-  bossMysterySpawnMin: 15,
-  bossMysterySpawnMax: 25,
-  /** Between mystery pickup spawns (non-boss); scaled with longer levels. */
-  mysterySpawnIntervalMin: 21,
-  mysterySpawnIntervalMax: 31,
+  /** Boss fight: treasure cadence (seconds between spawns). Tighter than normal play so bosses drop more loot. */
+  bossTreasureSpawnMin: 1.1,
+  bossTreasureSpawnMax: 1.65,
+  /** Boss fight: mystery upgrade attempts — much faster than non-boss so long boss fights stay rewarding. */
+  bossMysterySpawnMin: 5.2,
+  bossMysterySpawnMax: 8.5,
+  /** Non-boss mystery spawn attempts (~classic cadence so upgrades stay visible during long levels). */
+  mysterySpawnIntervalMin: 10.5,
+  mysterySpawnIntervalMax: 15.5,
+  /** Cruising (casual, Sea or Planets): mine spawn interval multiplier (50% slower → 1.5× spacing). */
+  cruisingMineSpawnIntervalMultiplier: 1.5,
+  /** Cruising: forward/reverse thrust acceleration multiplier. */
+  cruisingAccelScale: 0.5,
   /** Extra mystery prizes allowed while a boss is active (on top of normal cap). */
-  bossMysteryExtraCap: 6,
+  bossMysteryExtraCap: 16,
   /** Virtual level boost when rolling treasure tiers during a boss. */
   bossTreasureLevelBonus: 2,
   /**
@@ -105,13 +132,25 @@ const TUNING = {
   /** Loot window after mirror raider; scaled with `levelStepSeconds`. */
   postBossLevel5CollectSeconds: 14,
   /**
-   * Shield repair from scoring: shield units added per point gained (not massive; tied to haul size).
-   * e.g. 0.012 → +12 shield per 1000 score while shield is below max.
+   * Shield repair from scoring: adds only while shield is below `SHIELD_REGEN_CAP` (100%).
+   * e.g. 0.012 → +12 per 1000 score toward that cap; mystery pickups raise shield toward 200%.
    */
   shieldRegenPerScorePoint: 0.012,
   /** Level 5 mirror raider: intro/outro vertical jump (fraction of world height). */
   bossAppearJumpHeightFrac: 0.2,
   bossExitJumpHeightFrac: 0.24,
+  /** Orbital station (optional): hull / shield / blaster services. */
+  stationServiceCost: 1000,
+  stationSpawnTimerMin: 38,
+  stationSpawnTimerMax: 72,
+  stationSpawnRetrySec: 10,
+  stationRespawnAfterBossMin: 22,
+  stationRespawnAfterBossMax: 48,
+  stationBodyRadius: 44,
+  stationDockRange: 96,
+  stationDrawWidth: 112,
+  /** Station despawns after this many seconds or when you undock. */
+  stationLifetimeSeconds: 60,
 };
 
 /** Levels that trigger a boss encounter (interstitial + clear field + unique threat). */
@@ -157,6 +196,7 @@ const CHEATS = {
   },
   putonyourcapes: () => {
     game.hull = MAX_HULL;
+    game.shieldScoreRegenUnlocked = true;
     game.shield = MAX_SHIELD;
     addOverlay("Power Surge: Fortified Hull", "#90d5ff");
     statusEl.textContent = "A strange power surges through the ship.";
@@ -166,6 +206,7 @@ const CHEATS = {
     game.blasterTier = 3;
     game.blasterCooldown = 0;
     game.hull = MAX_HULL;
+    game.shieldScoreRegenUnlocked = true;
     game.shield = MAX_SHIELD;
     game.immunityTimer = Math.max(game.immunityTimer, 60);
     game.invuln = Math.max(game.invuln, 1.2);
@@ -223,6 +264,7 @@ function resumeFromLevelPause() {
 }
 
 function togglePause() {
+  if (game.stationDockMode) return;
   if (game.gameOver || !game.started) return;
   if (game.awaitingLevelContinue) {
     resumeFromLevelPause();
@@ -233,6 +275,28 @@ function togglePause() {
 }
 
 window.addEventListener("keydown", (e) => {
+  if (e.code === "Escape" && game.stationDockMode) {
+    e.preventDefault();
+    leaveStationDock();
+    return;
+  }
+  if (e.code === "KeyE" && !e.repeat && game.started && !game.gameOver) {
+    if (game.stationDockMode) {
+      e.preventDefault();
+      leaveStationDock();
+      return;
+    }
+    if (
+      game.spaceStation &&
+      playerInStationDockRange() &&
+      !game.paused &&
+      !game.awaitingLevelContinue
+    ) {
+      e.preventDefault();
+      openStationDock();
+      return;
+    }
+  }
   const canTypeCheat = !game.started || game.paused;
   if (canTypeCheat && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.length === 1) {
     cheatBuffer += e.key.toLowerCase();
@@ -334,6 +398,8 @@ const game = {
   speedBoostTimer: 0,
   immunityTimer: 0,
   shield: 0,
+  /** Score-based shield regen runs only after first shield mystery (or cheat); then always. */
+  shieldScoreRegenUnlocked: false,
   hasBlaster: false,
   blasterTier: 0,
   bullets: [],
@@ -354,6 +420,11 @@ const game = {
   bossIntroAfterStart: false,
   /** Cleared field; spawn boss when player dismisses the boss interstitial. */
   pendingBossSpawn: false,
+  /** `{ x, y }` or null — planets + stations enabled only. */
+  spaceStation: null,
+  stationSpawnTimer: 0,
+  /** Dock UI open: game paused, E/Esc to leave. */
+  stationDockMode: false,
   settings: {
     wrapWorld: false,
     shockwaves: true,
@@ -365,6 +436,10 @@ const game = {
    * If false: mostly classic planets; black holes appear randomly (see TUNING.blackHoleSpawnChance).
    */
     singularity: false,
+    /** Sea or Planets: easier mines & gentler thrust (see `isCruisingWorld`). */
+    cruisingMode: false,
+    /** Random ISS-style station in planets mode (see `spaceStationToggle` / `?station=`). */
+    spaceStationsEnabled: false,
     startLevel: 1,
     largeMode: defaultLargeModeForDesktop(),
     cruiseThrottle: 0.82,
@@ -374,6 +449,19 @@ const game = {
 
 function getStartLevel() {
   return clamp(Math.floor(game.settings.startLevel || 1), 1, 99);
+}
+
+/** Cruising (casual): slower mines & softer thrust — works in Sea (open water) or Planets. */
+function isCruisingWorld() {
+  return game.settings.cruisingMode === true;
+}
+
+function mineSpawnIntervalScale() {
+  return isCruisingWorld() ? TUNING.cruisingMineSpawnIntervalMultiplier : 1;
+}
+
+function cruisingThrustAccelScale() {
+  return isCruisingWorld() ? TUNING.cruisingAccelScale : 1;
 }
 
 /** Keep simulation bounds equal to the full canvas (no inset playfield). */
@@ -402,11 +490,19 @@ function resetGame() {
   game.gameOver = false;
   game.invuln = 0;
   game.explosions = [];
-  game.mysterySpawnTimer = 19;
+  game.mysterySpawnTimer = 9.5;
   game.mysteryAwarded = 0;
   game.speedBoostTimer = 0;
   game.immunityTimer = 0;
   game.shield = 0;
+  game.shieldScoreRegenUnlocked = false;
+  game.spaceStation = null;
+  game.stationDockMode = false;
+  if (stationDockPanelEl) stationDockPanelEl.hidden = true;
+  game.stationSpawnTimer =
+    game.settings.spaceStationsEnabled && game.settings.spaceMode
+      ? rand(TUNING.stationSpawnTimerMin, TUNING.stationSpawnTimerMax)
+      : 0;
   game.hasBlaster = false;
   game.blasterTier = 0;
   game.bullets = [];
@@ -418,7 +514,7 @@ function resetGame() {
   game.awaitingLevelContinue = false;
   game.mobileCruise = false;
   cheatBuffer = "";
-  game.mineSpawnTimer = 1.2;
+  game.mineSpawnTimer = 1.2 * mineSpawnIntervalScale();
   game.treasureSpawnTimer = 2.4;
   game.levelTimer = 0;
   game.lastTs = performance.now();
@@ -453,13 +549,24 @@ function resetGame() {
 
 function syncSpaceModeChrome() {
   document.body.classList.toggle("space-mode", game.settings.spaceMode);
+  document.body.classList.toggle("cruising-mode", isCruisingWorld());
   const metaTheme = document.querySelector('meta[name="theme-color"]');
   if (metaTheme) {
     metaTheme.setAttribute("content", game.settings.spaceMode ? "#050508" : "#0b2d4e");
   }
   if (spaceModeToggleEl) spaceModeToggleEl.checked = game.settings.spaceMode;
+  if (cruisingToggleEl) {
+    cruisingToggleEl.checked = game.settings.cruisingMode;
+  }
+  if (spaceStationToggleEl) {
+    spaceStationToggleEl.disabled = !game.settings.spaceMode;
+    spaceStationToggleEl.checked = game.settings.spaceStationsEnabled;
+  }
   if (worldModeBtn) {
-    worldModeBtn.textContent = game.settings.spaceMode ? "World: Planets" : "World: Space";
+    worldModeBtn.textContent = game.settings.spaceMode ? "World: Planets" : "World: Sea";
+    worldModeBtn.title = game.settings.cruisingMode
+      ? "Sea or Planets with Cruising on (slower mines, softer thrust). Click to switch Sea ↔ Planets."
+      : "Toggle Sea (open water) ↔ Planets (stars & gravity). Use Cruising in settings for a gentler pace in either.";
   }
 }
 
@@ -957,6 +1064,19 @@ function applyBlackHoleConsumption() {
     return;
   }
 
+  if (
+    game.spaceStation &&
+    entityInsideBlackHoleSingularity(game.spaceStation.x, game.spaceStation.y, TUNING.stationBodyRadius)
+  ) {
+    if (game.stationDockMode) {
+      game.stationDockMode = false;
+      game.paused = false;
+      if (stationDockPanelEl) stationDockPanelEl.hidden = true;
+    }
+    game.spaceStation = null;
+    game.stationSpawnTimer = rand(TUNING.stationSpawnRetrySec * 1.2, TUNING.stationSpawnRetrySec * 2.2);
+  }
+
   game.mines = game.mines.filter((m) => !entityInsideBlackHoleSingularity(m.x, m.y, m.radius));
   game.treasures = game.treasures.filter((t) => !entityInsideBlackHoleSingularity(t.x, t.y, t.radius));
   game.bullets = game.bullets.filter((b) => !entityInsideBlackHoleSingularity(b.x, b.y, b.radius));
@@ -1005,6 +1125,10 @@ function overlapsSolidSphere(x, y, entityRadius) {
       gw.kind === "blackHole" ? gw.consumeRadius : gw.bodyRadius ?? gw.consumeRadius ?? 0;
     if (Math.hypot(x - gw.x, y - gw.y) < solid + entityRadius) return true;
   }
+  if (game.spaceStation) {
+    const s = game.spaceStation;
+    if (Math.hypot(x - s.x, y - s.y) < TUNING.stationBodyRadius + entityRadius) return true;
+  }
   return false;
 }
 
@@ -1034,8 +1158,240 @@ function resolveSolidSphere(e, entityRadius, reflectVel) {
         }
       }
     }
+    if (game.spaceStation) {
+      const st = game.spaceStation;
+      const dx = e.x - st.x;
+      const dy = e.y - st.y;
+      const dist = Math.hypot(dx, dy);
+      const br = TUNING.stationBodyRadius;
+      const minD = br + entityRadius + 0.5;
+      if (dist < minD && dist >= 1e-5) {
+        moved = true;
+        const nx = dx / dist;
+        const ny = dy / dist;
+        e.x = st.x + nx * minD;
+        e.y = st.y + ny * minD;
+        if (reflectVel && e.vx !== undefined && e.vy !== undefined) {
+          const vn = e.vx * nx + e.vy * ny;
+          if (vn < 0) {
+            e.vx -= 2 * vn * nx;
+            e.vy -= 2 * vn * ny;
+          }
+        }
+      }
+    }
     if (!moved) break;
   }
+}
+
+function ensureIssStationImg() {
+  if (issStationImg) return;
+  issStationImg = new Image();
+  issStationImg.src = "./assets/iss-station.svg";
+}
+
+function playerInStationDockRange() {
+  const s = game.spaceStation;
+  const p = game.player;
+  if (!s || !p) return false;
+  return Math.hypot(p.x - s.x, p.y - s.y) < TUNING.stationDockRange;
+}
+
+function trySpawnSpaceStation() {
+  if (!game.settings.spaceStationsEnabled || !game.settings.spaceMode) return false;
+  if (game.spaceStation || game.boss || game.pendingBossSpawn) return false;
+  const r = TUNING.stationBodyRadius;
+  const margin = r + 72;
+  ensureIssStationImg();
+  outer: for (let k = 0; k < 52; k += 1) {
+    const x = rand(margin, WORLD.width - margin);
+    const y = rand(margin, WORLD.height - margin);
+    if (entityInsideBlackHoleSingularity(x, y, r)) continue;
+    if (overlapsSolidSphere(x, y, r)) continue;
+    const p = game.player;
+    if (p && Math.hypot(x - p.x, y - p.y) < 175) continue;
+    for (const m of game.mines) {
+      if (Math.hypot(x - m.x, y - m.y) < 100) continue outer;
+    }
+    game.spaceStation = { x, y, life: TUNING.stationLifetimeSeconds };
+    addOverlay("Orbital station — enter ring to dock", "#b8e0ff");
+    statusEl.textContent = "Station online — fly into the ring to dock (60s window).";
+    return true;
+  }
+  return false;
+}
+
+function expireSpaceStation() {
+  if (game.stationDockMode) {
+    game.stationDockMode = false;
+    game.paused = false;
+    if (stationDockPanelEl) stationDockPanelEl.hidden = true;
+  }
+  game.spaceStation = null;
+  game.stationSpawnTimer = rand(TUNING.stationSpawnTimerMin, TUNING.stationSpawnTimerMax);
+  game.lastTs = performance.now();
+  statusEl.textContent = "Station departed — docking window closed.";
+}
+
+function updateSpaceStation(dt) {
+  if (!game.settings.spaceStationsEnabled || !game.settings.spaceMode) {
+    if (game.stationDockMode) {
+      game.stationDockMode = false;
+      game.paused = false;
+      if (stationDockPanelEl) stationDockPanelEl.hidden = true;
+    }
+    game.spaceStation = null;
+    return;
+  }
+  if (game.boss || game.pendingBossSpawn) {
+    if (game.spaceStation || game.stationDockMode) {
+      if (game.stationDockMode) {
+        game.stationDockMode = false;
+        game.paused = false;
+        if (stationDockPanelEl) stationDockPanelEl.hidden = true;
+      }
+      game.spaceStation = null;
+      game.stationSpawnTimer = rand(
+        TUNING.stationRespawnAfterBossMin,
+        TUNING.stationRespawnAfterBossMax
+      );
+    }
+    return;
+  }
+  if (game.spaceStation) {
+    game.spaceStation.life -= dt;
+    if (game.spaceStation.life <= 0) expireSpaceStation();
+  }
+  if (!game.spaceStation && !game.stationDockMode) {
+    game.stationSpawnTimer -= dt;
+    if (game.stationSpawnTimer > 0) return;
+    if (trySpawnSpaceStation()) return;
+    game.stationSpawnTimer = TUNING.stationSpawnRetrySec;
+  }
+}
+
+function drawSpaceStation() {
+  const s = game.spaceStation;
+  if (!s || !game.settings.spaceMode) return;
+  const w = TUNING.stationDrawWidth;
+  const aspect = issStationImg && issStationImg.naturalHeight ? issStationImg.naturalHeight / issStationImg.naturalWidth : 0.63;
+  const h = w * aspect;
+  ctx.save();
+  ctx.translate(s.x, s.y);
+  ctx.globalAlpha = 0.92;
+  if (issStationImg && issStationImg.complete && issStationImg.naturalWidth > 0) {
+    ctx.drawImage(issStationImg, -w * 0.5, -h * 0.5, w, h);
+  } else {
+    ctx.fillStyle = "rgba(180, 200, 230, 0.35)";
+    ctx.beginPath();
+    ctx.arc(0, 0, TUNING.stationBodyRadius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(160, 210, 255, 0.7)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  if (playerInStationDockRange() && !game.stationDockMode && game.started && !game.gameOver) {
+    ctx.strokeStyle = "rgba(120, 220, 255, 0.55)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 5]);
+    ctx.beginPath();
+    ctx.arc(0, 0, TUNING.stationDockRange, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.restore();
+}
+
+function refreshStationDockUi() {
+  const c = TUNING.stationServiceCost;
+  const sc = game.score;
+  if (stationHullBtn) {
+    stationHullBtn.disabled = game.hull >= MAX_HULL || sc < c;
+    stationHullBtn.textContent =
+      game.hull >= MAX_HULL ? "Hull already full" : `Full hull repair (${c} pts)`;
+  }
+  if (stationShieldBtn) {
+    stationShieldBtn.disabled = game.shield >= MAX_SHIELD || sc < c;
+    stationShieldBtn.textContent =
+      game.shield >= MAX_SHIELD ? "Shield already full" : `Full shield restore (${c} pts)`;
+  }
+  if (stationBlasterBtn) {
+    const maxed = game.hasBlaster && game.blasterTier >= 3;
+    stationBlasterBtn.disabled = maxed || sc < c;
+    stationBlasterBtn.textContent = maxed
+      ? "Blaster fully upgraded"
+      : !game.hasBlaster
+        ? `Enable blaster (${c} pts)`
+        : `Blaster upgrade (tier ${game.blasterTier + 1}, ${c} pts)`;
+  }
+}
+
+function openStationDock() {
+  if (!game.spaceStation || !playerInStationDockRange() || game.stationDockMode) return;
+  game.stationDockMode = true;
+  game.paused = true;
+  if (game.player) {
+    game.player.vx = 0;
+    game.player.vy = 0;
+  }
+  if (stationDockPanelEl) stationDockPanelEl.hidden = false;
+  refreshStationDockUi();
+  statusEl.textContent = "Docked — choose a service or undock (E / Esc).";
+}
+
+function leaveStationDock() {
+  if (!game.stationDockMode) return;
+  game.stationDockMode = false;
+  game.paused = false;
+  if (stationDockPanelEl) stationDockPanelEl.hidden = true;
+  game.spaceStation = null;
+  game.stationSpawnTimer = rand(TUNING.stationSpawnTimerMin, TUNING.stationSpawnTimerMax);
+  game.lastTs = performance.now();
+  statusEl.textContent = "Undocked — station has departed.";
+}
+
+function stationPurchaseHull() {
+  const c = TUNING.stationServiceCost;
+  if (game.hull >= MAX_HULL || game.score < c) return;
+  game.score -= c;
+  game.hull = MAX_HULL;
+  statusEl.textContent = "Station: hull restored.";
+  refreshStationDockUi();
+  updateHud();
+}
+
+function stationPurchaseShield() {
+  const c = TUNING.stationServiceCost;
+  if (game.shield >= MAX_SHIELD || game.score < c) return;
+  game.score -= c;
+  game.shieldScoreRegenUnlocked = true;
+  game.shield = MAX_SHIELD;
+  statusEl.textContent = "Station: shields restored.";
+  refreshStationDockUi();
+  updateHud();
+}
+
+function stationPurchaseBlaster() {
+  const c = TUNING.stationServiceCost;
+  if (game.score < c) return;
+  if (game.hasBlaster && game.blasterTier >= 3) return;
+  game.score -= c;
+  if (!game.hasBlaster) {
+    game.hasBlaster = true;
+    game.blasterTier = 1;
+    game.blasterCooldown = 0;
+    statusEl.textContent = "Station: blaster online.";
+  } else if (game.blasterTier === 1) {
+    game.blasterTier = 2;
+    game.blasterCooldown = 0;
+    statusEl.textContent = "Station: blaster spread upgrade.";
+  } else {
+    game.blasterTier = 3;
+    game.blasterCooldown = 0;
+    statusEl.textContent = "Station: rear blaster batteries.";
+  }
+  refreshStationDockUi();
+  updateHud();
 }
 
 function spawnMine() {
@@ -1143,9 +1499,10 @@ function spawnMysteryPrize() {
 function updatePlayer(dt) {
   const p = game.player;
   const speedBoostScale = game.speedBoostTimer > 0 ? 1.35 : 1;
+  const cruiseAccel = cruisingThrustAccelScale();
   const turnRate = 3.15;
-  const accel = 320 * speedBoostScale;
-  const reverse = 175 * speedBoostScale;
+  const accel = 320 * speedBoostScale * cruiseAccel;
+  const reverse = 175 * speedBoostScale * cruiseAccel;
   const drag = 0.987;
   const maxSpeed = 315 * speedBoostScale;
 
@@ -1421,15 +1778,18 @@ function applyShockwaveEffects(dt) {
 
 function getMysteryPrizeCap() {
   if (game.level >= TUNING.mysteryLevel16Threshold) return TUNING.mysteryCapLevel16Plus;
-  return TUNING.mysteryCapBase + Math.floor(game.score / 1000) * TUNING.mysteryCapPerThousand;
+  return (
+    TUNING.mysteryCapBase +
+    Math.floor(game.score / TUNING.mysteryCapScoreStep) * TUNING.mysteryCapPerScoreStep
+  );
 }
 
 /** Slow shield repair: scales with score gained this frame (treasure, boss bonus, etc.). */
 function applyShieldRegenFromScoreDelta(dScore) {
-  if (dScore <= 0 || game.shield >= MAX_SHIELD) return;
+  if (dScore <= 0 || !game.shieldScoreRegenUnlocked || game.shield >= SHIELD_REGEN_CAP) return;
   const add = dScore * TUNING.shieldRegenPerScorePoint;
   if (add <= 0) return;
-  game.shield = Math.min(MAX_SHIELD, game.shield + add);
+  game.shield = Math.min(SHIELD_REGEN_CAP, game.shield + add);
 }
 
 /** Effective cap for spawning mystery pickups (higher during boss brawls). */
@@ -1459,9 +1819,10 @@ function applyMysteryPowerup() {
     const repairPowers = [25, 50, 100];
     const heal = repairPowers[Math.floor(rand(0, repairPowers.length))];
     if (game.hull >= MAX_HULL) {
-      game.score += 333;
-      statusEl.textContent = "Mystery prize: hull maxed, +333 points.";
-      addOverlay("POWERUP: Bonus +333", "#f2e2a0");
+      const pts = Math.round(333 * TUNING.economyScoreMultiplier);
+      game.score += pts;
+      statusEl.textContent = `Mystery prize: hull maxed, +${pts} points.`;
+      addOverlay(`POWERUP: Bonus +${pts}`, "#f2e2a0");
     } else {
       game.hull = Math.min(MAX_HULL, game.hull + heal);
       statusEl.textContent = `Mystery prize: hull repair +${heal}%`;
@@ -1473,7 +1834,9 @@ function applyMysteryPowerup() {
     statusEl.textContent = "Mystery prize: temporary immunity!";
     addOverlay("POWERUP: Temporary Immunity", "#bfc8ff");
   } else if (roll === 3) {
-    game.shield = Math.min(MAX_SHIELD, game.shield + 75);
+    game.shieldScoreRegenUnlocked = true;
+    const boosted = game.shield + 75;
+    game.shield = Math.min(MAX_SHIELD, Math.max(SHIELD_POWERUP_MIN_AFTER, boosted));
     statusEl.textContent = "Mystery prize: shield strengthened!";
     addOverlay(`POWERUP: Shield ${Math.round(game.shield)}%`, "#90d5ff");
   } else if (!game.hasBlaster) {
@@ -1493,9 +1856,10 @@ function applyMysteryPowerup() {
     statusEl.textContent = "Mystery prize: rear blaster batteries!";
     addOverlay("POWERUP: Blaster Aft", "#ffc38d");
   } else {
-    game.score += 200;
-    statusEl.textContent = "Mystery prize: blaster maxed — +200 points!";
-    addOverlay("POWERUP: Bonus +200", "#f2e2a0");
+    const pts = Math.round(200 * TUNING.economyScoreMultiplier);
+    game.score += pts;
+    statusEl.textContent = `Mystery prize: blaster maxed — +${pts} points!`;
+    addOverlay(`POWERUP: Bonus +${pts}`, "#f2e2a0");
   }
 }
 
@@ -1569,11 +1933,12 @@ function spawnBossMirrorRaider() {
     shootCd: useJump ? 999 : 0.35,
   };
   game.treasureSpawnTimer = 1.9;
-  game.mysterySpawnTimer = 13;
+  game.mysterySpawnTimer = 5.5;
 }
 
 function defeatBoss() {
-  const bonus = 520 + game.level * 40;
+  const rawBonus = 520 + game.level * 40;
+  const bonus = Math.round(rawBonus * TUNING.economyScoreMultiplier);
   const levelWhenKilled = game.level;
   game.score += bonus;
   game.boss = null;
@@ -1817,7 +2182,7 @@ function handleCollisions() {
         game.mysteryAwarded += 1;
         applyMysteryPowerup();
       } else {
-        game.score += t.value;
+        game.score += Math.round(t.value * TUNING.economyScoreMultiplier);
       }
       return false;
     }
@@ -1887,11 +2252,12 @@ function updateDifficulty(dt) {
     }
   }
 
-  const mineInterval = clamp(
-    TUNING.mineSpawnIntervalMax - game.level * TUNING.mineSpawnIntervalPerLevel,
-    TUNING.mineSpawnIntervalMin,
-    TUNING.mineSpawnIntervalMax
-  );
+  const mineInterval =
+    clamp(
+      TUNING.mineSpawnIntervalMax - game.level * TUNING.mineSpawnIntervalPerLevel,
+      TUNING.mineSpawnIntervalMin,
+      TUNING.mineSpawnIntervalMax
+    ) * mineSpawnIntervalScale();
   const treasureInterval = clamp(
     TUNING.treasureSpawnIntervalMax - game.level * TUNING.treasureSpawnIntervalPerLevel,
     TUNING.treasureSpawnIntervalMin,
@@ -2353,6 +2719,10 @@ function frame(ts) {
   const dt = clamp((ts - game.lastTs) / 1000, 0, 0.033);
   game.lastTs = ts;
 
+  if (!game.gameOver && game.started) {
+    updateSpaceStation(dt);
+  }
+
   if (!game.gameOver && !game.paused && game.started) {
     updatePlayer(dt);
     updateMines(dt);
@@ -2369,6 +2739,17 @@ function frame(ts) {
     updateBossBullets(dt);
     applyBlackHoleConsumption();
     handleCollisions();
+    if (
+      game.spaceStation &&
+      !game.stationDockMode &&
+      !game.paused &&
+      game.started &&
+      !game.gameOver &&
+      !game.awaitingLevelContinue &&
+      playerInStationDockRange()
+    ) {
+      openStationDock();
+    }
     const dScore = game.score - game.prevScoreForShieldRegen;
     if (dScore > 0) applyShieldRegenFromScoreDelta(dScore);
     game.prevScoreForShieldRegen = game.score;
@@ -2383,6 +2764,7 @@ function frame(ts) {
 
   drawBackground();
   if (game.settings.spaceMode) drawGravityWell();
+  drawSpaceStation();
   drawTreasures();
   drawExplosions();
   drawBullets();
@@ -2409,7 +2791,11 @@ function frame(ts) {
     ctx.fillRect(0, 0, WORLD.width, WORLD.height);
     ctx.fillStyle = "#f5e4b8";
     ctx.textAlign = "center";
-    if (game.awaitingLevelContinue) {
+    if (game.stationDockMode) {
+      ctx.font = "18px Trebuchet MS";
+      ctx.fillStyle = "#c8e8ff";
+      ctx.fillText("Docked — use panel or E / Esc to undock", WORLD.width * 0.5, WORLD.height * 0.88);
+    } else if (game.awaitingLevelContinue) {
       ctx.font = "bold 38px Trebuchet MS";
       const bossIntro = game.pendingBossSpawn && isBossLevel(game.level);
       if (bossIntro) {
@@ -2482,18 +2868,48 @@ if (spaceModeToggleEl) {
   spaceModeToggleEl.addEventListener("change", () => {
     game.settings.spaceMode = spaceModeToggleEl.checked;
     resetGame();
+    const cruiseNote = game.settings.cruisingMode ? " Cruising on (slower mines, softer thrust)." : "";
     statusEl.textContent = game.settings.spaceMode
-      ? "Planets: stars, asteroids & gravity worlds."
-      : "Space: open sky / sea.";
+      ? `Planets: stars, asteroids & gravity worlds.${cruiseNote}`
+      : `Sea: open water.${cruiseNote}`;
   });
 }
+if (cruisingToggleEl) {
+  cruisingToggleEl.addEventListener("change", () => {
+    game.settings.cruisingMode = cruisingToggleEl.checked;
+    syncSpaceModeChrome();
+    const where = game.settings.spaceMode ? "Planets" : "Sea";
+    statusEl.textContent = game.settings.cruisingMode
+      ? `Cruising on — ${where}: slower mines, softer thrust.`
+      : `Cruising off — ${where} difficulty.`;
+  });
+}
+if (spaceStationToggleEl) {
+  spaceStationToggleEl.addEventListener("change", () => {
+    if (!game.settings.spaceMode) {
+      spaceStationToggleEl.checked = false;
+      game.settings.spaceStationsEnabled = false;
+      return;
+    }
+    game.settings.spaceStationsEnabled = spaceStationToggleEl.checked;
+    resetGame();
+    statusEl.textContent = game.settings.spaceStationsEnabled
+      ? "Orbital stations on — fly into ring to dock (60s / undock to dismiss)."
+      : "Orbital stations off.";
+  });
+}
+if (stationHullBtn) stationHullBtn.addEventListener("click", () => stationPurchaseHull());
+if (stationShieldBtn) stationShieldBtn.addEventListener("click", () => stationPurchaseShield());
+if (stationBlasterBtn) stationBlasterBtn.addEventListener("click", () => stationPurchaseBlaster());
+if (stationLeaveBtn) stationLeaveBtn.addEventListener("click", () => leaveStationDock());
 if (worldModeBtn) {
   worldModeBtn.addEventListener("click", () => {
     game.settings.spaceMode = !game.settings.spaceMode;
     resetGame();
+    const cruiseNote = game.settings.cruisingMode ? " Cruising on." : "";
     statusEl.textContent = game.settings.spaceMode
-      ? "Planets: stars, asteroids & gravity worlds."
-      : "Space: open sky / sea.";
+      ? `Planets: stars, asteroids & gravity worlds.${cruiseNote}`
+      : `Sea: open water.${cruiseNote}`;
   });
 }
 if (shipSkinSelectEl) {
@@ -2637,7 +3053,32 @@ function applyModeFromQueryString() {
   try {
     const params = new URLSearchParams(window.location.search);
     if (params.get("mode") === "space") game.settings.spaceMode = true;
-    if (params.get("mode") === "water" || params.get("mode") === "sea") game.settings.spaceMode = false;
+    if (params.get("mode") === "water" || params.get("mode") === "sea") {
+      game.settings.spaceMode = false;
+    }
+    if (params.get("world") === "cruising") {
+      game.settings.cruisingMode = true;
+    }
+    const cr = params.get("cruising");
+    if (cr === "true" || cr === "1" || cr === "yes") {
+      game.settings.cruisingMode = true;
+    }
+    if (cr === "false" || cr === "0" || cr === "no") game.settings.cruisingMode = false;
+    const stationParam = params.get("station");
+    const issParam = params.get("iss");
+    if (
+      stationParam === "true" ||
+      stationParam === "1" ||
+      stationParam === "yes" ||
+      issParam === "1" ||
+      issParam === "yes"
+    ) {
+      game.settings.spaceStationsEnabled = true;
+      game.settings.spaceMode = true;
+    }
+    if (stationParam === "false" || stationParam === "0" || stationParam === "no") {
+      game.settings.spaceStationsEnabled = false;
+    }
     if (params.get("size") === "large") game.settings.largeMode = true;
     if (params.get("size") === "small") game.settings.largeMode = false;
     const sing = params.get("singularity");
@@ -2669,6 +3110,7 @@ function loadRasterShipAssets() {
     fireflyShipImg = new Image();
     fireflyShipImg.src = "./assets/firefly.svg";
   }
+  if (game.settings.spaceStationsEnabled) ensureIssStationImg();
 }
 
 function normalizeShipSkin() {

@@ -34,10 +34,27 @@
             <span class="grav-singularity-warn__text">Strong gravitational forces detected</span>
           </div>
         </div>
+        <div
+          id="stationDockPanel"
+          class="station-dock-panel ui-no-start"
+          hidden
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="stationDockTitle"
+        >
+          <h3 id="stationDockTitle" class="station-dock-panel__title">Orbital station</h3>
+          <p class="station-dock-panel__cost">1000 points per service</p>
+          <div class="station-dock-panel__actions">
+            <button type="button" id="stationHullBtn">Full hull repair</button>
+            <button type="button" id="stationShieldBtn">Full shield restore</button>
+            <button type="button" id="stationBlasterBtn">Blaster upgrade</button>
+            <button type="button" id="stationLeaveBtn" class="station-dock-panel__leave">Undock (E / Esc)</button>
+          </div>
+        </div>
       </div>
       <section class="controls ui-no-start">
         <button id="largeModeBtn" type="button">Large Mode: On</button>
-        <button id="worldModeBtn" type="button" title="World: Space = open sky/sea. World: Planets = stars, asteroids & gravity worlds.">
+        <button id="worldModeBtn" type="button" title="Toggle Sea (open water) ↔ Planets. Cruising is separate (settings).">
           World: Planets
         </button>
         <button id="restart" type="button">Restart</button>
@@ -78,6 +95,7 @@
         <p>Space = Pause/Resume</p>
         <p>F or Enter = Fire (with blaster)</p>
         <p>G = Emergency jump (~half map, clear of mines) — unlocks every 1000 score</p>
+        <p>Orbital station: enter the ring to auto-dock — E / Esc to undock (60s window; station leaves when you exit)</p>
 
         <label class="settings-field" for="shipSkinSelect">
           <span class="settings-field-label">Ship</span>
@@ -103,6 +121,14 @@
         <label class="toggle">
           <input id="spaceModeToggle" type="checkbox" checked />
           Planets (stars, asteroids, gravity worlds)
+        </label>
+        <label class="toggle">
+          <input id="cruisingToggle" type="checkbox" />
+          Cruising (casual): slower mines, softer thrust — Sea or Planets
+        </label>
+        <label class="toggle">
+          <input id="spaceStationToggle" type="checkbox" />
+          Orbital stations (planets): random ISS — ring auto-docks; 60s or undock to dismiss
         </label>
         <label class="toggle">
           Start Level
