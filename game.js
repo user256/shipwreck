@@ -200,6 +200,7 @@ function mirrorRaiderBossUsesTripleForwardAndBackwardBurst() {
 // - idontexist             => 60s invulnerability
 // - putonyourcapes         => max hull + shield
 // - sethgreen              => max blaster + hull + shield + immunity
+// URL: ?c=sethgreen (same names, case-insensitive) runs once after the first resetGame on load.
 const CHEATS = {
   howdoyouturnthisthingon: () => {
     game.hasBlaster = true;
@@ -277,6 +278,8 @@ const TREASURE_TABLE = [
 
 const KEY = Object.create(null);
 let cheatBuffer = "";
+/** Set from `?c=` in applyModeFromQueryString; applied once after resetGame so init doesn’t wipe cheats. */
+let pendingUrlCheatKey = null;
 
 function resumeFromLevelPause() {
   if (game.pendingBossSpawn) {
@@ -1092,6 +1095,28 @@ function placePlanets(avoidPlayer) {
 }
 
 const GRAVITY_WELL_STRENGTH = 96;
+/** Blaster bolts: deflection vs normal planets (outer wells stay fairly straight). */
+const BULLET_GRAVITY_MUL_PLANET = 0.32;
+/**
+ * Blaster bolts: base deflection multiplier inside a black hole’s pull (before BH scale — bullets are very fast).
+ */
+const BULLET_GRAV_MUL_BLACK_HOLE = 1.1;
+/**
+ * Extra multiplier on all black-hole bullet inward accel (midpoint between strong 7× and softer 3.75×).
+ */
+const BULLET_BH_GRAVITY_SCALE = 5.375;
+/**
+ * Falloff exponent for BH bullets (< 2 = more bend in the outer/mid pull disk than falloff²).
+ */
+const BULLET_BH_FALLOFF_EXP = 1.425;
+/**
+ * Inner fraction of a black hole’s pull radius where extra inward acceleration ramps in (option 5: corkscrew near core).
+ */
+const BULLET_BH_CORE_PULL_FRAC = 0.515;
+/**
+ * Extra inward accel (× GRAVITY_WELL_STRENGTH) at BH center; scaled by BULLET_BH_GRAVITY_SCALE and coreT².
+ */
+const BULLET_BH_CORE_EXTRA_MUL = 2.325;
 /** At well center, extra velocity retention per ~60fps step (lower = slower). Edge of pull radius = no extra drag. */
 const GRAVITY_WELL_SLOW_DRAG_FLOOR = 0.92;
 /**
@@ -1116,6 +1141,41 @@ function applyGravityWellVelocity(e, dt, mul) {
     const accel = GRAVITY_WELL_STRENGTH * mul * falloff * falloff;
     e.vx += nx * accel * dt;
     e.vy += ny * accel * dt;
+  }
+}
+
+/** Blaster shots: mild bend on planets; strong visible bend on black holes (fast bolts need large accel). */
+function applyGravityWellVelocityToBullet(b, dt) {
+  if (!game.settings.spaceMode) return;
+  for (const gw of game.planets) {
+    const dx = gw.x - b.x;
+    const dy = gw.y - b.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 10 || dist > gw.pullRadius) continue;
+    const nx = dx / dist;
+    const ny = dy / dist;
+    const falloffLin = 1 - dist / gw.pullRadius;
+    const isBh = gw.kind === "blackHole";
+    const baseMul = isBh ? BULLET_GRAV_MUL_BLACK_HOLE : BULLET_GRAVITY_MUL_PLANET;
+    const falloffPow = isBh
+      ? Math.pow(falloffLin, BULLET_BH_FALLOFF_EXP)
+      : falloffLin * falloffLin;
+    let accel = GRAVITY_WELL_STRENGTH * baseMul * falloffPow;
+    if (isBh) {
+      accel *= BULLET_BH_GRAVITY_SCALE;
+      const coreR = gw.pullRadius * BULLET_BH_CORE_PULL_FRAC;
+      if (dist < coreR) {
+        const coreT = 1 - dist / coreR;
+        accel +=
+          GRAVITY_WELL_STRENGTH *
+          BULLET_BH_CORE_EXTRA_MUL *
+          BULLET_BH_GRAVITY_SCALE *
+          coreT *
+          coreT;
+      }
+    }
+    b.vx += nx * accel * dt;
+    b.vy += ny * accel * dt;
   }
 }
 
@@ -1750,7 +1810,7 @@ function updateExplosions(dt) {
 
 function updateBullets(dt) {
   for (const b of game.bullets) {
-    applyGravityWellVelocity(b, dt, 0.32);
+    applyGravityWellVelocityToBullet(b, dt);
     b.x += b.vx * dt;
     b.y += b.vy * dt;
     b.life -= dt;
@@ -3382,6 +3442,12 @@ function applyModeFromQueryString() {
       const n = Number.parseInt(levelParam, 10);
       if (!Number.isNaN(n)) game.settings.startLevel = clamp(n, 1, 99);
     }
+    pendingUrlCheatKey = null;
+    const cheatParam = params.get("c");
+    if (cheatParam !== null && cheatParam !== "") {
+      const cheatKey = cheatParam.trim().toLowerCase();
+      if (CHEATS[cheatKey]) pendingUrlCheatKey = cheatKey;
+    }
   } catch (_) {
     /* ignore */
   }
@@ -3436,6 +3502,12 @@ loadRasterShipAssets();
 syncSpaceModeChrome();
 applyCanvasSize();
 resetGame();
+if (pendingUrlCheatKey && CHEATS[pendingUrlCheatKey]) {
+  CHEATS[pendingUrlCheatKey]();
+  cheatBuffer = "";
+  updateHud();
+}
+pendingUrlCheatKey = null;
 wrapToggleEl.checked = game.settings.wrapWorld;
 shockwaveToggleEl.checked = game.settings.shockwaves;
 mineChainToggleEl.checked = game.settings.mineChainBlast;
