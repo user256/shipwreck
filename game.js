@@ -15,6 +15,7 @@ const wrapToggleEl = document.getElementById("wrapToggle");
 const shockwaveToggleEl = document.getElementById("shockwaveToggle");
 const mineChainToggleEl = document.getElementById("mineChainToggle");
 const damageOpacityToggleEl = document.getElementById("damageOpacityToggle");
+const bossLevelsToggleEl = document.getElementById("bossLevelsToggle");
 const levelPauseToggleEl = document.getElementById("levelPauseToggle");
 const spaceModeToggleEl = document.getElementById("spaceModeToggle");
 const cruisingToggleEl = document.getElementById("cruisingToggle");
@@ -158,16 +159,28 @@ const TUNING = {
   stationLifetimeSeconds: 60,
 };
 
-/** Levels that trigger a boss encounter (interstitial + clear field + unique threat). */
-const BOSS_LEVELS = new Set([5, 10, 15, 20]);
-
+/** Boss encounter every 5 levels (5 through 95; aligns with start level cap 99). */
 function isBossLevel(level) {
-  return BOSS_LEVELS.has(level);
+  if (game.settings.bossLevelsEnabled === false) return false;
+  const n = Math.floor(level);
+  return n >= 5 && n <= 99 && n % 5 === 0;
 }
 
-/** Mirror raider (levels 5, 10, 15 & 20): intro/outro jump + HP relocates. */
+/**
+ * Twin shield bosses at 25, 30, 35, 40, 45, … — fixed ladder through 40, then +5% hull each boss after.
+ */
+function twinShieldBossHpFraction(level) {
+  if (level < 25 || level % 5 !== 0) return null;
+  if (level === 25) return 0.5;
+  if (level === 30) return 1.0;
+  if (level === 35) return 1.25;
+  if (level === 40) return 1.5;
+  return 1.5 + ((level - 40) / 5) * 0.05;
+}
+
+/** Mirror raider boss levels: intro/outro jump + HP relocates. */
 function mirrorRaiderBossUsesJumpEffects() {
-  return game.level === 5 || game.level === 10 || game.level === 15 || game.level === 20;
+  return isBossLevel(game.level);
 }
 
 /** Level 10 raider: triple forward burst (tier-2-style spread). */
@@ -175,9 +188,9 @@ function mirrorRaiderBossUsesTripleForwardBurst() {
   return game.level === 10;
 }
 
-/** Level 15 / 20 raider: triple forward plus triple backward (each ship). */
+/** Triple forward + backward: level 15 solo, then every-5 twin wave from 20 onward. */
 function mirrorRaiderBossUsesTripleForwardAndBackwardBurst() {
-  return game.level === 15 || game.level === 20;
+  return game.level === 15 || (game.level >= 20 && game.level % 5 === 0);
 }
 
 // Hidden debug/nostalgia cheats (intentionally not shown in UI):
@@ -242,6 +255,10 @@ function getDarkBossEncounterTitle(level) {
   if (level === 10) return `Dark ${ship} — Slight Return`;
   if (level === 15) return `Dark ${ship} — Crossfire`;
   if (level === 20) return `Dark ${ship} — Twin Crossfire`;
+  if (level === 25) return `Dark ${ship} — Twin Shields`;
+  if (level === 30) return `Dark ${ship} — Full Shields`;
+  if (level === 35) return `Dark ${ship} — Shield Surge`;
+  if (level === 40) return `Dark ${ship} — Shield Overload`;
   return `BOSS — Level ${level}`;
 }
 
@@ -489,6 +506,8 @@ const game = {
     spaceStationsEnabled: false,
     /** When true, ship draw alpha drops as hull takes damage (visual feedback). */
     damageOpacity: true,
+    /** Boss waves on multiples of 5 (mirror raiders, shield tiers, etc.). */
+    bossLevelsEnabled: true,
     startLevel: 1,
     largeMode: defaultLargeModeForDesktop(),
     cruiseThrottle: 0.82,
@@ -1980,7 +1999,7 @@ function clearFieldForBoss() {
   game.explosions = [];
 }
 
-function createMirrorRaiderBoss(xCenter, vx) {
+function createMirrorRaiderBoss(xCenter, vx, opts = {}) {
   const skin = SHIP_SKIN_OPTIONS.some((o) => o.id === game.settings.shipSkin)
     ? game.settings.shipSkin
     : "default";
@@ -1989,6 +2008,13 @@ function createMirrorRaiderBoss(xCenter, vx) {
   const appearJump = useJump
     ? Math.min(150, WORLD.height * TUNING.bossAppearJumpHeightFrac)
     : 0;
+  const maxHp = 14;
+  /** Fraction of maxHp as shield points (may exceed 1.0 for heavy bosses). */
+  const shieldFrac =
+    typeof opts.shieldHpFraction === "number" && opts.shieldHpFraction > 0
+      ? clamp(opts.shieldHpFraction, 0, 3)
+      : 0;
+  const shieldMax = shieldFrac > 0 ? Math.max(1, Math.round(maxHp * shieldFrac)) : 0;
   return {
     x: xCenter,
     y: useJump ? baseY + appearJump : baseY,
@@ -2004,18 +2030,26 @@ function createMirrorRaiderBoss(xCenter, vx) {
     angle: vx >= 0 ? 0 : Math.PI,
     radius: 13,
     shipSkin: skin,
-    maxHp: 14,
-    hp: 14,
+    maxHp,
+    hp: maxHp,
+    shieldMax,
+    shield: shieldMax,
     shootCd: useJump ? 999 : 0.35,
   };
 }
 
 function spawnBossMirrorRaider() {
   loadRasterShipAssets();
+  const twinShieldFrac = twinShieldBossHpFraction(game.level);
   if (game.level === 20) {
     game.bosses = [
       createMirrorRaiderBoss(WORLD.width * 0.28, 125),
       createMirrorRaiderBoss(WORLD.width * 0.72, -125),
+    ];
+  } else if (twinShieldFrac != null) {
+    game.bosses = [
+      createMirrorRaiderBoss(WORLD.width * 0.28, 125, { shieldHpFraction: twinShieldFrac }),
+      createMirrorRaiderBoss(WORLD.width * 0.72, -125, { shieldHpFraction: twinShieldFrac }),
     ];
   } else {
     game.bosses = [createMirrorRaiderBoss(WORLD.width * 0.5, 125)];
@@ -2032,12 +2066,7 @@ function defeatBoss() {
   game.bosses = [];
   game.bossBullets = [];
   const collectSec = TUNING.postBossLevel5CollectSeconds;
-  if (
-    levelWhenKilled === 5 ||
-    levelWhenKilled === 10 ||
-    levelWhenKilled === 15 ||
-    levelWhenKilled === 20
-  ) {
+  if (isBossLevel(levelWhenKilled)) {
     game.levelTimer = Math.max(0, TUNING.levelStepSeconds - collectSec);
     const title = getDarkBossEncounterTitle(levelWhenKilled);
     addOverlay(`Raider destroyed +${bonus} — ~${collectSec}s to loot!`, "#a9ffbc");
@@ -2223,7 +2252,11 @@ function handlePlayerBulletsVsBoss() {
       const rr = b.radius + boss.radius;
       if (distSq(b, boss) >= rr * rr) continue;
       alive[bi] = false;
-      boss.hp -= 1;
+      if (boss.shield > 0) {
+        boss.shield -= 1;
+      } else {
+        boss.hp -= 1;
+      }
       if (boss.hp <= 0) {
         if (mirrorRaiderBossUsesJumpEffects()) {
           boss.dying = true;
@@ -2699,6 +2732,14 @@ function drawBossShip(boss) {
     ctx.fillStyle = hullDamageRatio > 0.35 ? "#c4b59a" : "#7d7160";
     ctx.fillRect(-6, -4, 9, 8);
   }
+  if (boss.shieldMax > 0 && boss.shield > 0) {
+    const shieldRatio = clamp(boss.shield / boss.shieldMax, 0, 1);
+    ctx.strokeStyle = `rgba(255, 130, 180, ${0.3 + shieldRatio * 0.55})`;
+    ctx.lineWidth = 2 + shieldRatio * 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, boss.radius + 10, 0, Math.PI * 2);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -2906,14 +2947,24 @@ function frame(ts) {
         ctx.font = bt.length > 36 ? "bold 28px Trebuchet MS" : "bold 34px Trebuchet MS";
         ctx.fillText(bt, WORLD.width * 0.5, WORLD.height * 0.42);
         ctx.font = "20px Trebuchet MS";
-        const sub =
-          game.level === 20
-            ? "Two raiders — each fires triple fore and aft like Crossfire. Mines keep spawning."
-            : game.level === 15
-              ? "Triple bolts fore and aft — your twin seals both lanes. Mines keep spawning."
-              : game.level === 10
-                ? "Triple forward bolts — your twin hunts the horizon. Mines keep spawning."
-                : "Your twin hunts the horizon — mines keep spawning.";
+        let sub;
+        const introTwinShieldFrac = twinShieldBossHpFraction(game.level);
+        if (introTwinShieldFrac != null) {
+          const pct = Math.round(introTwinShieldFrac * 100);
+          const post40 =
+            game.level > 40
+              ? " +5% hull shields vs the last boss (continues every 5 levels)."
+              : "";
+          sub = `Twin raiders — ~${pct}% of hull as shields.${post40} Triple fore/aft. Mines keep spawning.`;
+        } else if (game.level === 20) {
+          sub = "Two raiders — each fires triple fore and aft like Crossfire. Mines keep spawning.";
+        } else if (game.level === 15) {
+          sub = "Triple bolts fore and aft — your twin seals both lanes. Mines keep spawning.";
+        } else if (game.level === 10) {
+          sub = "Triple forward bolts — your twin hunts the horizon. Mines keep spawning.";
+        } else {
+          sub = "Your twin hunts the horizon — mines keep spawning.";
+        }
         ctx.fillText(sub, WORLD.width * 0.5, WORLD.height * 0.5);
         ctx.fillText("Blast the raider. Space or tap to engage.", WORLD.width * 0.5, WORLD.height * 0.56);
       } else {
@@ -2981,6 +3032,22 @@ if (damageOpacityToggleEl) {
     statusEl.textContent = game.settings.damageOpacity
       ? "Damage opacity on: ship fades when hull is low."
       : "Damage opacity off: ship stays full opacity.";
+  });
+}
+if (bossLevelsToggleEl) {
+  bossLevelsToggleEl.addEventListener("change", () => {
+    game.settings.bossLevelsEnabled = bossLevelsToggleEl.checked;
+    if (!game.started && !game.gameOver) {
+      const sl = getStartLevel();
+      game.bossIntroAfterStart = isBossLevel(sl);
+      statusEl.textContent = game.bossIntroAfterStart
+        ? `${getDarkBossEncounterTitle(sl)} — click to start, then Space or tap to engage.`
+        : `Click anywhere to start. Starting at level ${sl}.`;
+    } else {
+      statusEl.textContent = game.settings.bossLevelsEnabled
+        ? "Boss levels on: Dark encounters every 5 levels."
+        : "Boss levels off: no boss interstitials or raiders.";
+    }
   });
 }
 if (levelPauseToggleEl) {
@@ -3304,6 +3371,7 @@ wrapToggleEl.checked = game.settings.wrapWorld;
 shockwaveToggleEl.checked = game.settings.shockwaves;
 mineChainToggleEl.checked = game.settings.mineChainBlast;
 if (damageOpacityToggleEl) damageOpacityToggleEl.checked = game.settings.damageOpacity;
+if (bossLevelsToggleEl) bossLevelsToggleEl.checked = game.settings.bossLevelsEnabled !== false;
 if (levelPauseToggleEl) levelPauseToggleEl.checked = game.settings.pauseOnLevelUp;
 startLevelInputEl.value = String(game.settings.startLevel);
 requestAnimationFrame(frame);
