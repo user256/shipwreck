@@ -14,6 +14,7 @@ const restartBtn = document.getElementById("restart");
 const wrapToggleEl = document.getElementById("wrapToggle");
 const shockwaveToggleEl = document.getElementById("shockwaveToggle");
 const mineChainToggleEl = document.getElementById("mineChainToggle");
+const damageOpacityToggleEl = document.getElementById("damageOpacityToggle");
 const levelPauseToggleEl = document.getElementById("levelPauseToggle");
 const spaceModeToggleEl = document.getElementById("spaceModeToggle");
 const cruisingToggleEl = document.getElementById("cruisingToggle");
@@ -28,6 +29,10 @@ const settingsBtn = document.getElementById("settingsBtn");
 const settingsPanelEl = document.getElementById("settingsPanel");
 const settingsBackdropEl = document.getElementById("settingsBackdrop");
 const settingsCloseBtn = document.getElementById("settingsCloseBtn");
+const wikiBtn = document.getElementById("wikiBtn");
+const wikiPanelEl = document.getElementById("wikiPanel");
+const wikiBackdropEl = document.getElementById("wikiBackdrop");
+const wikiCloseBtn = document.getElementById("wikiCloseBtn");
 const shipSkinSelectEl = document.getElementById("shipSkinSelect");
 const gravSingularityWarnEl = document.getElementById("gravSingularityWarn");
 const spaceStationToggleEl = document.getElementById("spaceStationToggle");
@@ -154,15 +159,15 @@ const TUNING = {
 };
 
 /** Levels that trigger a boss encounter (interstitial + clear field + unique threat). */
-const BOSS_LEVELS = new Set([5, 10, 15]);
+const BOSS_LEVELS = new Set([5, 10, 15, 20]);
 
 function isBossLevel(level) {
   return BOSS_LEVELS.has(level);
 }
 
-/** Mirror raider (levels 5, 10 & 15): intro/outro jump + HP relocates. */
+/** Mirror raider (levels 5, 10, 15 & 20): intro/outro jump + HP relocates. */
 function mirrorRaiderBossUsesJumpEffects() {
-  return game.level === 5 || game.level === 10 || game.level === 15;
+  return game.level === 5 || game.level === 10 || game.level === 15 || game.level === 20;
 }
 
 /** Level 10 raider: triple forward burst (tier-2-style spread). */
@@ -170,9 +175,9 @@ function mirrorRaiderBossUsesTripleForwardBurst() {
   return game.level === 10;
 }
 
-/** Level 15 raider: same triple forward as 10, plus triple backward. */
+/** Level 15 / 20 raider: triple forward plus triple backward (each ship). */
 function mirrorRaiderBossUsesTripleForwardAndBackwardBurst() {
-  return game.level === 15;
+  return game.level === 15 || game.level === 20;
 }
 
 // Hidden debug/nostalgia cheats (intentionally not shown in UI):
@@ -236,6 +241,7 @@ function getDarkBossEncounterTitle(level) {
   if (level === 5) return `Dark ${ship}`;
   if (level === 10) return `Dark ${ship} — Slight Return`;
   if (level === 15) return `Dark ${ship} — Crossfire`;
+  if (level === 20) return `Dark ${ship} — Twin Crossfire`;
   return `BOSS — Level ${level}`;
 }
 
@@ -260,7 +266,8 @@ function resumeFromLevelPause() {
   game.awaitingLevelContinue = false;
   game.paused = false;
   game.lastTs = performance.now();
-  statusEl.textContent = game.boss ? "Sail — take down the raider!" : "Sail!";
+  statusEl.textContent =
+    game.bosses.length > 0 ? "Sail — take down the raider!" : "Sail!";
 }
 
 function togglePause() {
@@ -279,6 +286,38 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     leaveStationDock();
     return;
+  }
+  const wikiOpen = wikiPanelEl && !wikiPanelEl.hidden;
+  if (wikiOpen) {
+    if (e.code === "Escape") {
+      e.preventDefault();
+      setWikiOpen(false);
+      return;
+    }
+    const wikiPassThrough = new Set([
+      "Tab",
+      "ArrowDown",
+      "ArrowUp",
+      "ArrowLeft",
+      "ArrowRight",
+      "PageDown",
+      "PageUp",
+      "Home",
+      "End",
+      "Space",
+    ]);
+    if (!wikiPassThrough.has(e.code)) {
+      e.preventDefault();
+    }
+    return;
+  }
+  const settingsOpen = settingsPanelEl && !settingsPanelEl.hidden;
+  if (settingsOpen) {
+    if (e.code === "Escape") {
+      e.preventDefault();
+      setSettingsOpen(false);
+      return;
+    }
   }
   if (e.code === "KeyE" && !e.repeat && game.started && !game.gameOver) {
     if (game.stationDockMode) {
@@ -313,7 +352,13 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     if (!e.repeat) togglePause();
   }
-  if (e.code === "KeyG" && !e.repeat && game.started && !game.gameOver && !game.paused) {
+  if (
+    (e.code === "KeyG" || e.code === "Delete") &&
+    !e.repeat &&
+    game.started &&
+    !game.gameOver &&
+    !game.paused
+  ) {
     tryEmergencyJump();
   }
   KEY[e.code] = true;
@@ -405,6 +450,8 @@ const game = {
   bullets: [],
   blasterCooldown: 0,
   jumpNextThreshold: 1000,
+  /** Show "Jump @ score" in HUD only after the first successful emergency jump. */
+  jumpRechargeHudUnlocked: false,
   overlays: [],
   paused: false,
   started: false,
@@ -413,8 +460,8 @@ const game = {
   /** Space mode only: one or two gravity worlds (two more likely in large mode). */
   planets: [],
   spaceDecor: { stars: [], asteroids: [] },
-  /** Mirror raider (level 5+ boss): patrols top, fires horizontal bolts. */
-  boss: null,
+  /** Mirror raider(s): one entry per active boss ship. */
+  bosses: [],
   bossBullets: [],
   /** After reset with a boss start level, first click opens boss interstitial. */
   bossIntroAfterStart: false,
@@ -440,6 +487,8 @@ const game = {
     cruisingMode: false,
     /** Random ISS-style station in planets mode (see `spaceStationToggle` / `?station=`). */
     spaceStationsEnabled: false,
+    /** When true, ship draw alpha drops as hull takes damage (visual feedback). */
+    damageOpacity: true,
     startLevel: 1,
     largeMode: defaultLargeModeForDesktop(),
     cruiseThrottle: 0.82,
@@ -508,6 +557,7 @@ function resetGame() {
   game.bullets = [];
   game.blasterCooldown = 0;
   game.jumpNextThreshold = 1000;
+  game.jumpRechargeHudUnlocked = false;
   game.overlays = [];
   game.paused = false;
   game.started = false;
@@ -518,7 +568,7 @@ function resetGame() {
   game.treasureSpawnTimer = 2.4;
   game.levelTimer = 0;
   game.lastTs = performance.now();
-  game.boss = null;
+  game.bosses = [];
   game.bossBullets = [];
   game.bossIntroAfterStart = isBossLevel(startLevel);
   game.pendingBossSpawn = false;
@@ -597,7 +647,7 @@ function isJumpLandingClear(tx, ty, playerRadius) {
 
 function tryEmergencyJump() {
   if (game.awaitingLevelContinue) return;
-  if (game.boss !== null || game.pendingBossSpawn) {
+  if (game.bosses.length > 0 || game.pendingBossSpawn) {
     statusEl.textContent = "Jump offline — defeat the raider first.";
     return;
   }
@@ -624,6 +674,7 @@ function tryEmergencyJump() {
       p.vx = 0;
       p.vy = 0;
       game.jumpNextThreshold = game.score + 1000;
+      game.jumpRechargeHudUnlocked = true;
       addOverlay("Emergency jump!", "#a9f2ff");
       statusEl.textContent = `Jump used — next charge at ${game.jumpNextThreshold} score.`;
       return;
@@ -701,12 +752,12 @@ function applyCanvasSize() {
     rescaleEntityCollection(game.explosions, sx, sy);
     rescaleEntityCollection(game.bullets, sx, sy);
     rescaleEntityCollection(game.bossBullets, sx, sy);
-    if (game.boss) {
-      game.boss.x *= sx;
-      game.boss.y *= sy;
-      if (typeof game.boss.baseY === "number") game.boss.baseY *= sy;
-      if (typeof game.boss.appearJump === "number") game.boss.appearJump *= sy;
-      const rj = game.boss.relocJump;
+    for (const boss of game.bosses) {
+      boss.x *= sx;
+      boss.y *= sy;
+      if (typeof boss.baseY === "number") boss.baseY *= sy;
+      if (typeof boss.appearJump === "number") boss.appearJump *= sy;
+      const rj = boss.relocJump;
       if (rj) {
         rj.fromX *= sx;
         rj.toX *= sx;
@@ -736,8 +787,32 @@ function applyCanvasSize() {
 
 function setSettingsOpen(isOpen) {
   if (!settingsPanelEl || !settingsBackdropEl) return;
+  if (isOpen && wikiPanelEl && wikiBackdropEl) {
+    wikiPanelEl.hidden = true;
+    wikiBackdropEl.hidden = true;
+  }
   settingsPanelEl.hidden = !isOpen;
   settingsBackdropEl.hidden = !isOpen;
+  if (!isOpen && settingsBtn) {
+    settingsBtn.focus({ preventScroll: true });
+  }
+}
+
+function setWikiOpen(isOpen) {
+  if (!wikiPanelEl || !wikiBackdropEl) return;
+  if (isOpen && settingsPanelEl && settingsBackdropEl) {
+    settingsPanelEl.hidden = true;
+    settingsBackdropEl.hidden = true;
+  }
+  wikiPanelEl.hidden = !isOpen;
+  wikiBackdropEl.hidden = !isOpen;
+  if (isOpen) {
+    requestAnimationFrame(() => {
+      wikiPanelEl.focus({ preventScroll: true });
+    });
+  } else if (wikiBtn) {
+    wikiBtn.focus({ preventScroll: true });
+  }
 }
 
 function isMobileLikeDevice() {
@@ -1085,9 +1160,11 @@ function applyBlackHoleConsumption() {
     (ex) => !entityInsideBlackHoleSingularity(ex.x, ex.y, Math.max(6, ex.radius * 0.25))
   );
 
-  if (game.boss && !game.boss.dying && entityInsideBlackHoleSingularity(game.boss.x, game.boss.y, game.boss.radius)) {
-    defeatBoss();
-  }
+  const hadRaider = game.bosses.length > 0;
+  game.bosses = game.bosses.filter(
+    (boss) => boss.dying || !entityInsideBlackHoleSingularity(boss.x, boss.y, boss.radius)
+  );
+  if (hadRaider && game.bosses.length === 0) defeatBoss();
 }
 
 function driftTreasuresTowardWell(dt) {
@@ -1199,7 +1276,7 @@ function playerInStationDockRange() {
 
 function trySpawnSpaceStation() {
   if (!game.settings.spaceStationsEnabled || !game.settings.spaceMode) return false;
-  if (game.spaceStation || game.boss || game.pendingBossSpawn) return false;
+  if (game.spaceStation || game.bosses.length > 0 || game.pendingBossSpawn) return false;
   const r = TUNING.stationBodyRadius;
   const margin = r + 72;
   ensureIssStationImg();
@@ -1243,7 +1320,7 @@ function updateSpaceStation(dt) {
     game.spaceStation = null;
     return;
   }
-  if (game.boss || game.pendingBossSpawn) {
+  if (game.bosses.length > 0 || game.pendingBossSpawn) {
     if (game.spaceStation || game.stationDockMode) {
       if (game.stationDockMode) {
         game.stationDockMode = false;
@@ -1542,7 +1619,7 @@ function updatePlayer(dt) {
   else confineEntity(p, 0.4);
   resolveSolidSphere(p, p.radius, true);
 
-  if (canShoot() && (KEY.KeyF || KEY.Enter)) {
+  if (canShoot() && (KEY.KeyF || KEY.Enter || KEY.Insert)) {
     fireBlasterVolley();
   }
 }
@@ -1795,12 +1872,12 @@ function applyShieldRegenFromScoreDelta(dScore) {
 /** Effective cap for spawning mystery pickups (higher during boss brawls). */
 function getMysterySpawnCap() {
   const base = getMysteryPrizeCap();
-  return game.boss !== null ? base + TUNING.bossMysteryExtraCap : base;
+  return game.bosses.length > 0 ? base + TUNING.bossMysteryExtraCap : base;
 }
 
 /** 0–4: speed, hull, immunity, shield, blaster ladder. Boss fights bias shield & blaster. */
 function rollMysteryPowerupKind() {
-  if (!game.boss) return Math.floor(rand(0, 5));
+  if (game.bosses.length === 0) return Math.floor(rand(0, 5));
   const r = Math.random();
   if (r < 0.1) return 0;
   if (r < 0.24) return 1;
@@ -1843,7 +1920,7 @@ function applyMysteryPowerup() {
     game.hasBlaster = true;
     game.blasterTier = 1;
     game.blasterCooldown = 0;
-    statusEl.textContent = "Mystery prize: blaster online (F/Enter to fire)!";
+    statusEl.textContent = "Mystery prize: blaster online (F / Enter / Insert to fire)!";
     addOverlay("POWERUP: Blaster Online", "#ffc38d");
   } else if (game.blasterTier === 1) {
     game.blasterTier = 2;
@@ -1903,18 +1980,17 @@ function clearFieldForBoss() {
   game.explosions = [];
 }
 
-function spawnBossMirrorRaider() {
+function createMirrorRaiderBoss(xCenter, vx) {
   const skin = SHIP_SKIN_OPTIONS.some((o) => o.id === game.settings.shipSkin)
     ? game.settings.shipSkin
     : "default";
-  loadRasterShipAssets();
   const useJump = mirrorRaiderBossUsesJumpEffects();
   const baseY = WORLD.height * 0.14;
   const appearJump = useJump
     ? Math.min(150, WORLD.height * TUNING.bossAppearJumpHeightFrac)
     : 0;
-  game.boss = {
-    x: WORLD.width * 0.5,
+  return {
+    x: xCenter,
     y: useJump ? baseY + appearJump : baseY,
     baseY,
     appearJump,
@@ -1923,15 +1999,27 @@ function spawnBossMirrorRaider() {
     exitAnimT: 0,
     relocStage: 0,
     relocJump: null,
-    vx: 125,
+    vx,
     vy: 0,
-    angle: 0,
+    angle: vx >= 0 ? 0 : Math.PI,
     radius: 13,
     shipSkin: skin,
     maxHp: 14,
     hp: 14,
     shootCd: useJump ? 999 : 0.35,
   };
+}
+
+function spawnBossMirrorRaider() {
+  loadRasterShipAssets();
+  if (game.level === 20) {
+    game.bosses = [
+      createMirrorRaiderBoss(WORLD.width * 0.28, 125),
+      createMirrorRaiderBoss(WORLD.width * 0.72, -125),
+    ];
+  } else {
+    game.bosses = [createMirrorRaiderBoss(WORLD.width * 0.5, 125)];
+  }
   game.treasureSpawnTimer = 1.9;
   game.mysterySpawnTimer = 5.5;
 }
@@ -1941,10 +2029,15 @@ function defeatBoss() {
   const bonus = Math.round(rawBonus * TUNING.economyScoreMultiplier);
   const levelWhenKilled = game.level;
   game.score += bonus;
-  game.boss = null;
+  game.bosses = [];
   game.bossBullets = [];
   const collectSec = TUNING.postBossLevel5CollectSeconds;
-  if (levelWhenKilled === 5 || levelWhenKilled === 10 || levelWhenKilled === 15) {
+  if (
+    levelWhenKilled === 5 ||
+    levelWhenKilled === 10 ||
+    levelWhenKilled === 15 ||
+    levelWhenKilled === 20
+  ) {
     game.levelTimer = Math.max(0, TUNING.levelStepSeconds - collectSec);
     const title = getDarkBossEncounterTitle(levelWhenKilled);
     addOverlay(`Raider destroyed +${bonus} — ~${collectSec}s to loot!`, "#a9ffbc");
@@ -1964,10 +2057,8 @@ function defeatBoss() {
   updateHud();
 }
 
-function updateBoss(dt) {
-  const boss = game.boss;
-  if (!boss) return;
-
+/** Advance one mirror raider; returns false when it should be removed (exit anim done). */
+function stepMirrorRaiderBoss(boss, dt) {
   if (boss.dying) {
     boss.exitAnimT += dt;
     const dur = 0.58;
@@ -1975,8 +2066,7 @@ function updateBoss(dt) {
     const exitLift = WORLD.height * TUNING.bossExitJumpHeightFrac;
     const startY = typeof boss.baseY === "number" ? boss.baseY : boss.y;
     boss.y = startY - u * u * exitLift - Math.sin(u * Math.PI) * (exitLift * 0.12);
-    if (u >= 1) defeatBoss();
-    return;
+    return u < 1;
   }
 
   if (boss.spawnAnimT < 1) {
@@ -1990,7 +2080,7 @@ function updateBoss(dt) {
       boss.y = boss.baseY;
       boss.shootCd = 0.35;
     }
-    return;
+    return true;
   }
 
   if (boss.relocJump) {
@@ -2013,7 +2103,7 @@ function updateBoss(dt) {
       boss.shootCd = Math.max(boss.shootCd, 0.45);
       maybeTriggerBossHpRelocate(boss);
     }
-    return;
+    return true;
   }
 
   boss.x += boss.vx * dt;
@@ -2064,6 +2154,18 @@ function updateBoss(dt) {
       boss.shootCd = rand(0.42, 0.78);
     }
   }
+  return true;
+}
+
+function updateBoss(dt) {
+  if (game.bosses.length === 0) return;
+  const had = game.bosses.length;
+  const next = [];
+  for (const boss of game.bosses) {
+    if (stepMirrorRaiderBoss(boss, dt)) next.push(boss);
+  }
+  game.bosses = next;
+  if (had > 0 && game.bosses.length === 0) defeatBoss();
 }
 
 function updateBossBullets(dt) {
@@ -2111,14 +2213,15 @@ function handlePlayerBulletsVsBossBullets() {
 }
 
 function handlePlayerBulletsVsBoss() {
-  const boss = game.boss;
-  if (!boss || boss.dying || game.bullets.length === 0) return;
+  if (game.bosses.length === 0 || game.bullets.length === 0) return;
   const alive = new Array(game.bullets.length).fill(true);
   for (let bi = 0; bi < game.bullets.length; bi += 1) {
     if (!alive[bi]) continue;
     const b = game.bullets[bi];
-    const rr = b.radius + boss.radius;
-    if (distSq(b, boss) < rr * rr) {
+    for (const boss of game.bosses) {
+      if (boss.dying) continue;
+      const rr = b.radius + boss.radius;
+      if (distSq(b, boss) >= rr * rr) continue;
       alive[bi] = false;
       boss.hp -= 1;
       if (boss.hp <= 0) {
@@ -2129,10 +2232,10 @@ function handlePlayerBulletsVsBoss() {
         } else {
           defeatBoss();
         }
-        game.bullets = game.bullets.filter((_, idx) => alive[idx]);
-        return;
+      } else {
+        maybeTriggerBossHpRelocate(boss);
       }
-      maybeTriggerBossHpRelocate(boss);
+      break;
     }
   }
   game.bullets = game.bullets.filter((_, idx) => alive[idx]);
@@ -2218,7 +2321,7 @@ function handleCollisions() {
 }
 
 function updateDifficulty(dt) {
-  const inBossFight = game.boss !== null;
+  const inBossFight = game.bosses.length > 0;
   const bossLocksLevelProgress =
     inBossFight || (isBossLevel(game.level) && game.pendingBossSpawn);
 
@@ -2504,7 +2607,7 @@ function drawPlayer() {
   const hullVisualRatio = clamp(game.hull / BASE_HULL, 0, 1.35);
 
   ctx.save();
-  ctx.globalAlpha = 0.35 + hullDamageRatio * 0.65;
+  ctx.globalAlpha = game.settings.damageOpacity ? 0.35 + hullDamageRatio * 0.65 : 1;
   ctx.translate(p.x, p.y);
   ctx.rotate(p.angle);
 
@@ -2703,8 +2806,8 @@ function drawEffectText() {
     effects.push(`${bl} ON`);
   }
   if (game.started && !game.gameOver) {
-    if (game.score >= game.jumpNextThreshold) effects.push("Jump ready (G)");
-    else effects.push(`Jump @ ${game.jumpNextThreshold}`);
+    if (game.score >= game.jumpNextThreshold) effects.push("Jump ready (G / Del)");
+    else if (game.jumpRechargeHudUnlocked) effects.push(`Jump @ ${game.jumpNextThreshold}`);
   }
   if (effects.length === 0) return;
   ctx.save();
@@ -2769,7 +2872,7 @@ function frame(ts) {
   drawExplosions();
   drawBullets();
   drawMines();
-  if (game.boss) drawBossShip(game.boss);
+  for (const boss of game.bosses) drawBossShip(boss);
   drawBossBullets();
   drawPlayer();
   drawOverlays();
@@ -2804,11 +2907,13 @@ function frame(ts) {
         ctx.fillText(bt, WORLD.width * 0.5, WORLD.height * 0.42);
         ctx.font = "20px Trebuchet MS";
         const sub =
-          game.level === 15
-            ? "Triple bolts fore and aft — your twin seals both lanes. Mines keep spawning."
-            : game.level === 10
-              ? "Triple forward bolts — your twin hunts the horizon. Mines keep spawning."
-              : "Your twin hunts the horizon — mines keep spawning.";
+          game.level === 20
+            ? "Two raiders — each fires triple fore and aft like Crossfire. Mines keep spawning."
+            : game.level === 15
+              ? "Triple bolts fore and aft — your twin seals both lanes. Mines keep spawning."
+              : game.level === 10
+                ? "Triple forward bolts — your twin hunts the horizon. Mines keep spawning."
+                : "Your twin hunts the horizon — mines keep spawning.";
         ctx.fillText(sub, WORLD.width * 0.5, WORLD.height * 0.5);
         ctx.fillText("Blast the raider. Space or tap to engage.", WORLD.width * 0.5, WORLD.height * 0.56);
       } else {
@@ -2826,17 +2931,26 @@ function frame(ts) {
   }
 
   if (!game.started && !game.gameOver) {
-    ctx.fillStyle = "rgba(0,0,0,0.42)";
+    ctx.fillStyle = "rgba(0,0,0,0.68)";
     ctx.fillRect(0, 0, WORLD.width, WORLD.height);
-    ctx.fillStyle = "#f5e4b8";
+    ctx.fillStyle = "#fff8ec";
     ctx.textAlign = "center";
     ctx.font = "bold 40px Trebuchet MS";
-    ctx.fillText("CLICK ANYWHERE TO START", WORLD.width * 0.5, WORLD.height * 0.45);
+    ctx.fillText("CLICK ANYWHERE TO START", WORLD.width * 0.5, WORLD.height * 0.38);
+    ctx.font = "16px Trebuchet MS";
+    ctx.fillStyle = "#f0f7ff";
+    ctx.fillText("It's all legitimate salvage — if you can dodge the mines.", WORLD.width * 0.5, WORLD.height * 0.46);
+    ctx.fillText("Watch out for black holes.", WORLD.width * 0.5, WORLD.height * 0.505);
     ctx.font = "18px Trebuchet MS";
-    ctx.fillStyle = "#d6f0ff";
+    ctx.fillStyle = "#ffffff";
     ctx.fillText("Turn: A/D or Left/Right | Thrust: W or Up | Reverse: S or Down", WORLD.width * 0.5, WORLD.height * 0.58);
-    ctx.fillText("Fire: F/Enter | Jump: G | Pause/Resume: Space", WORLD.width * 0.5, WORLD.height * 0.64);
-    ctx.fillText("Dock: fly into station ring (auto) | Undock: Esc", WORLD.width * 0.5, WORLD.height * 0.70);
+    ctx.fillText("Jump: G / Del  |  Pause: Space", WORLD.width * 0.5, WORLD.height * 0.635);
+    ctx.font = "17px Trebuchet MS";
+    ctx.fillText(
+      "Fire* — requires blaster upgrade (purple orbs). Keys: F / Enter / Ins",
+      WORLD.width * 0.5,
+      WORLD.height * 0.69
+    );
   }
 
   requestAnimationFrame(frame);
@@ -2861,6 +2975,14 @@ mineChainToggleEl.addEventListener("change", () => {
     ? "Mine chain blasts enabled."
     : "Mine chain blasts disabled.";
 });
+if (damageOpacityToggleEl) {
+  damageOpacityToggleEl.addEventListener("change", () => {
+    game.settings.damageOpacity = damageOpacityToggleEl.checked;
+    statusEl.textContent = game.settings.damageOpacity
+      ? "Damage opacity on: ship fades when hull is low."
+      : "Damage opacity off: ship stays full opacity.";
+  });
+}
 if (levelPauseToggleEl) {
   levelPauseToggleEl.addEventListener("change", () => {
     game.settings.pauseOnLevelUp = levelPauseToggleEl.checked;
@@ -2963,6 +3085,21 @@ if (settingsCloseBtn) {
 if (settingsBackdropEl) {
   settingsBackdropEl.addEventListener("click", () => {
     setSettingsOpen(false);
+  });
+}
+if (wikiBtn) {
+  wikiBtn.addEventListener("click", () => {
+    setWikiOpen(true);
+  });
+}
+if (wikiCloseBtn) {
+  wikiCloseBtn.addEventListener("click", () => {
+    setWikiOpen(false);
+  });
+}
+if (wikiBackdropEl) {
+  wikiBackdropEl.addEventListener("click", () => {
+    setWikiOpen(false);
   });
 }
 window.addEventListener("click", (e) => {
@@ -3166,6 +3303,7 @@ resetGame();
 wrapToggleEl.checked = game.settings.wrapWorld;
 shockwaveToggleEl.checked = game.settings.shockwaves;
 mineChainToggleEl.checked = game.settings.mineChainBlast;
+if (damageOpacityToggleEl) damageOpacityToggleEl.checked = game.settings.damageOpacity;
 if (levelPauseToggleEl) levelPauseToggleEl.checked = game.settings.pauseOnLevelUp;
 startLevelInputEl.value = String(game.settings.startLevel);
 requestAnimationFrame(frame);

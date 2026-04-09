@@ -21,14 +21,16 @@ Create a single-player, browser-playable homage to the old flash games of yore:
 - [x] Lives/health and game over state.
 - [x] Restart flow after game over.
 
-
 ## Potential features
 - Ship / shield recovery (default off, based on point collection - possible point penalty?)
 - score zeros out with cheat codes?
 - space station / shop mechanic - between levels?
 - extra lives???
 - konami code ???
-
+- floating gravity wells (mini black hole?)
+- introduce difficulty mode
+- more ships to chose from, tardis / xwing?
+- export / import progress - maybe not due to saving???
 
 
 ## Next Iterations

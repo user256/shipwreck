@@ -18,7 +18,10 @@
           <div>Level: <span id="level">1</span></div>
           <div>Hull: <span id="hull">100%</span> <span id="shieldHud" hidden>(Shield: 0%)</span></div>
         </div>
-        <button id="settingsBtn" class="icon-btn" type="button" aria-label="Open settings">⚙</button>
+        <div class="hud-actions">
+          <button id="wikiBtn" class="icon-btn" type="button" aria-label="Open wiki / help">?</button>
+          <button id="settingsBtn" class="icon-btn" type="button" aria-label="Open settings">⚙</button>
+        </div>
       </header>
       <div class="canvas-stack">
         <canvas id="game" width="960" height="640" aria-label="Dubloon Disaster game canvas"></canvas>
@@ -81,11 +84,100 @@
       <p id="status" class="status">Collect treasure, dodge mines.</p>
     </main>
 
+    <div id="wikiBackdrop" class="wiki-overlay-backdrop ui-no-start" hidden></div>
+    <aside
+      id="wikiPanel"
+      class="wiki-overlay-panel ui-no-start"
+      aria-label="Shipwreck wiki"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="wikiTitle"
+      tabindex="-1"
+      hidden
+    >
+      <div class="settings-header wiki-overlay-header">
+        <h2 id="wikiTitle">Wiki</h2>
+        <button id="wikiCloseBtn" class="icon-btn" type="button" aria-label="Close wiki (Escape)">✕</button>
+      </div>
+      <div class="settings-body wiki-body">
+        <section class="wiki-section">
+          <h3 class="wiki-section-title">What’s the goal?</h3>
+          <p>
+            Earn <strong>points</strong> by collecting treasure dots. Bigger, brighter coins are worth more (see below).
+            Dodge mines, keep your hull in one piece, and survive — the <strong>level</strong> rises over time while you
+            play (boss fights pause the normal timer).
+          </p>
+        </section>
+        <section class="wiki-section">
+          <h3 class="wiki-section-title">Treasure dot values</h3>
+          <ul class="wiki-treasure-row">
+            <li class="wiki-treasure-item"><span class="wiki-dot wiki-dot--10" aria-hidden="true"></span> 10 pts</li>
+            <li class="wiki-treasure-item"><span class="wiki-dot wiki-dot--25" aria-hidden="true"></span> 25 pts</li>
+            <li class="wiki-treasure-item"><span class="wiki-dot wiki-dot--50" aria-hidden="true"></span> 50 pts</li>
+            <li class="wiki-treasure-item"><span class="wiki-dot wiki-dot--100" aria-hidden="true"></span> 100 pts</li>
+            <li class="wiki-treasure-item"><span class="wiki-dot wiki-dot--250" aria-hidden="true"></span> 250 pts</li>
+            <li class="wiki-treasure-item"><span class="wiki-dot wiki-dot--500" aria-hidden="true"></span> 500 pts</li>
+            <li class="wiki-treasure-item"><span class="wiki-dot wiki-dot--1000" aria-hidden="true"></span> 1000 pts</li>
+          </ul>
+        </section>
+        <section class="wiki-section">
+          <h3 class="wiki-section-title">What are power-ups?</h3>
+          <p>
+            Power-ups appear as <strong>large purple dots</strong> (mystery orbs). Each one grants a random upgrade.
+            Possible effects:
+          </p>
+          <ul class="wiki-list wiki-list--plain">
+            <li>Speed boost</li>
+            <li>Hull repair (+25%, +50%, or +100%, or bonus points if hull is already maxed)</li>
+            <li>Temporary immunity</li>
+            <li>Shield charge (can push shields above normal regen cap)</li>
+            <li>Blaster: first unlock, then spread shot, then rear-firing — or bonus points if fully upgraded</li>
+          </ul>
+        </section>
+        <section class="wiki-section">
+          <h3 class="wiki-section-title">Why can’t I fire?</h3>
+          <p>
+            Firing needs the <strong>blaster</strong> from a mystery power-up (or an orbital station upgrade). Use
+            <strong>F</strong>, <strong>Enter</strong>, or <strong>Insert</strong> once you have it.
+          </p>
+        </section>
+        <section class="wiki-section">
+          <h3 class="wiki-section-title">Where did my shield go?</h3>
+          <p>
+            Shields recover from <strong>score</strong> (the more points you earn in a hurry, the faster they refill), but
+            only back up to <strong>100%</strong> this way. After the first shield power-up (or a station shield restore),
+            that score-based regen kicks in. Mystery shields can still push you toward <strong>200%</strong>.
+          </p>
+        </section>
+        <section class="wiki-section">
+          <h3 class="wiki-section-title">Why doesn’t my hull repair?</h3>
+          <p>There’s no passive hull repair — <em>because I’m mean.</em> Grab hull prizes from purple orbs or, if stations are enabled, pay at an orbital station.</p>
+        </section>
+        <section class="wiki-section">
+          <h3 class="wiki-section-title">Orbital stations</h3>
+          <p>
+            Stations are <strong>off by default</strong>. Open <strong>Settings</strong> (the ⚙ button) and turn on
+            <strong>Orbital stations</strong> — they only appear in <strong>Planets</strong> (gravity) mode, not pure open-space
+            sky. The same panel is where you choose your <strong>Ship</strong> (vessel), set <strong>start level</strong>, wrap
+            world, cruising, and the other toggles.
+          </p>
+        </section>
+        <section class="wiki-section">
+          <h3 class="wiki-section-title">What about bosses?</h3>
+          <p>Boss fights show up on <strong>levels 5, 10, 15, and 20</strong> (every five levels through 20), with heavier treasure and mystery drops while the fight lasts.</p>
+        </section>
+        <section class="wiki-section">
+          <h3 class="wiki-section-title">Why does this suck so much on mobile?</h3>
+          <p>Yeah, I’ll get to that — if I can figure out how.</p>
+        </section>
+      </div>
+    </aside>
+
     <div id="settingsBackdrop" class="settings-backdrop ui-no-start" hidden></div>
     <aside id="settingsPanel" class="settings-panel ui-no-start" aria-label="Game settings" hidden>
       <div class="settings-header">
         <h2>Settings</h2>
-        <button id="settingsCloseBtn" class="icon-btn" type="button" aria-label="Close settings">✕</button>
+        <button id="settingsCloseBtn" class="icon-btn" type="button" aria-label="Close settings (Escape)">✕</button>
       </div>
       <div class="settings-body">
         <p class="settings-controls-title">Controls</p>
@@ -93,8 +185,8 @@
         <p>Up or W = Accelerate</p>
         <p>Down or S = Reverse</p>
         <p>Space = Pause/Resume</p>
-        <p>F or Enter = Fire (with blaster)</p>
-        <p>G = Emergency jump (~half map, clear of mines) — unlocks every 1000 score</p>
+        <p>F, Enter, or Insert = Fire (with blaster)</p>
+        <p>G or Delete = Emergency jump (~half map, clear of mines) — unlocks every 1000 score</p>
         <p>Orbital station: enter the ring to auto-dock — E / Esc to undock (60s window; station leaves when you exit)</p>
 
         <label class="settings-field" for="shipSkinSelect">
@@ -113,6 +205,10 @@
         <label class="toggle">
           <input id="mineChainToggle" type="checkbox" checked />
           Mine Chain Blast
+        </label>
+        <label class="toggle">
+          <input id="damageOpacityToggle" type="checkbox" checked />
+          Damage opacity (ship fades when hull is low)
         </label>
         <label class="toggle">
           <input id="levelPauseToggle" type="checkbox" />

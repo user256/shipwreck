@@ -19,6 +19,8 @@ body {
 .app[hidden],
 #settingsBackdrop[hidden],
 #settingsPanel[hidden],
+#wikiBackdrop[hidden],
+#wikiPanel[hidden],
 #shieldHud[hidden],
 #mobileControls[hidden] {
   display: none !important;
@@ -44,6 +46,13 @@ body {
   display: flex;
   gap: 14px;
   flex-wrap: wrap;
+}
+
+.hud-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 .canvas-stack {
@@ -349,10 +358,22 @@ body.space-mode #settingsBackdrop {
   background: rgba(0, 0, 0, 0.68) !important;
 }
 
+body.space-mode #wikiBackdrop {
+  background: rgba(0, 0, 0, 0.75) !important;
+}
+
 body.space-mode #settingsPanel {
   background: #080b14 !important;
   border-left-color: #4a6fa8 !important;
   box-shadow: -10px 0 36px rgba(0, 0, 0, 0.55) !important;
+}
+
+body.space-mode #wikiPanel {
+  background: #0a1020 !important;
+  border-color: #4a6fa8 !important;
+  box-shadow:
+    0 0 0 1px rgba(80, 120, 200, 0.2),
+    0 20px 48px rgba(0, 0, 0, 0.65) !important;
 }
 
 body.space-mode .settings-body {
@@ -386,6 +407,15 @@ body.space-mode .mobile-controls {
   z-index: 2147483645 !important;
 }
 
+#wikiBackdrop {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  background: rgba(0, 0, 0, 0.55) !important;
+  z-index: 2147483645 !important;
+}
+
 #settingsPanel {
   position: fixed !important;
   top: 0 !important;
@@ -402,6 +432,49 @@ body.space-mode .mobile-controls {
   z-index: 2147483646 !important;
   overflow-y: auto !important;
   margin: 0 !important;
+}
+
+#wikiPanel {
+  position: fixed !important;
+  top: 50% !important;
+  left: 50% !important;
+  right: auto !important;
+  bottom: auto !important;
+  transform: translate(-50%, -50%) !important;
+  width: min(76rem, calc(100vw - 20px)) !important;
+  max-width: none !important;
+  max-height: min(90vh, calc(100dvh - 28px)) !important;
+  height: auto !important;
+  background: #0d2338 !important;
+  border: 2px solid #9b7538 !important;
+  border-radius: 12px !important;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.35),
+    0 16px 48px rgba(0, 0, 0, 0.55) !important;
+  padding: 18px 22px 22px !important;
+  z-index: 2147483646 !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  margin: 0 !important;
+  -webkit-overflow-scrolling: touch;
+  outline: none;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.wiki-overlay-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: -4px 0 12px;
+  padding-bottom: 10px;
+  background: linear-gradient(to bottom, #0d2338 70%, transparent);
+  border-bottom: 1px solid rgba(155, 117, 56, 0.45);
+}
+
+body.space-mode .wiki-overlay-header {
+  background: linear-gradient(to bottom, #0a1020 70%, transparent);
+  border-bottom-color: rgba(74, 111, 168, 0.45);
 }
 
 .settings-header {
@@ -436,6 +509,104 @@ body.space-mode .mobile-controls {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.wiki-body {
+  gap: 16px;
+  font-size: 1.05rem;
+  line-height: 1.55;
+}
+
+.wiki-section-title {
+  margin: 0 0 6px;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #f3e8bb;
+}
+
+.wiki-section p {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.wiki-treasure-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 22px;
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.wiki-treasure-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.wiki-treasure-item .wiki-dot {
+  margin-right: 0;
+}
+
+.wiki-list {
+  margin: 6px 0 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.wiki-list li {
+  margin: 4px 0;
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.wiki-list--plain {
+  list-style: disc;
+  padding-left: 1.25rem;
+}
+
+.wiki-list--plain li {
+  display: list-item;
+}
+
+.wiki-dot {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  margin-right: 10px;
+  flex-shrink: 0;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.wiki-dot--10 {
+  background: #a76b2c;
+}
+.wiki-dot--25 {
+  background: #b7b7b7;
+}
+.wiki-dot--50 {
+  background: #d6d6d6;
+}
+.wiki-dot--100 {
+  background: #ece27a;
+}
+.wiki-dot--250 {
+  background: #e6cd58;
+}
+.wiki-dot--500 {
+  background: #f0d23f;
+}
+.wiki-dot--1000 {
+  background: #f4f2df;
+}
+
+body.space-mode .wiki-section-title {
+  color: #e8f0ff;
 }
 
 .mobile-controls {
