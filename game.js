@@ -17,6 +17,7 @@ const shockwaveToggleEl = document.getElementById("shockwaveToggle");
 const mineChainToggleEl = document.getElementById("mineChainToggle");
 const damageOpacityToggleEl = document.getElementById("damageOpacityToggle");
 const bossLevelsToggleEl = document.getElementById("bossLevelsToggle");
+const blackHolesFatalToggleEl = document.getElementById("blackHolesFatalToggle");
 const levelPauseToggleEl = document.getElementById("levelPauseToggle");
 const spaceModeToggleEl = document.getElementById("spaceModeToggle");
 const cruisingToggleEl = document.getElementById("cruisingToggle");
@@ -452,6 +453,8 @@ const game = {
   level: 1,
   gameOver: false,
   invuln: 0,
+  /** Non-fatal black hole: seconds until another hull scrape can apply. */
+  blackHoleHullScratchCd: 0,
   mineSpawnTimer: 0,
   treasureSpawnTimer: 0,
   levelTimer: 0,
@@ -510,6 +513,8 @@ const game = {
     damageOpacity: true,
     /** Boss waves on multiples of 5 (mirror raiders, shield tiers, etc.). */
     bossLevelsEnabled: true,
+    /** Touching a black hole singularity: instant game over vs. repeated hull loss (see `applyBlackHoleConsumption`). */
+    blackHolesFatal: true,
     startLevel: 1,
     largeMode: defaultLargeModeForDesktop(),
     cruiseThrottle: 0.82,
@@ -559,6 +564,7 @@ function resetGame() {
   game.level = startLevel;
   game.gameOver = false;
   game.invuln = 0;
+  game.blackHoleHullScratchCd = 0;
   game.explosions = [];
   game.mysterySpawnTimer = 9.5;
   game.mysteryAwarded = 0;
@@ -632,6 +638,10 @@ function syncSpaceModeChrome() {
   if (spaceStationToggleEl) {
     spaceStationToggleEl.disabled = !game.settings.spaceMode;
     spaceStationToggleEl.checked = game.settings.spaceStationsEnabled;
+  }
+  if (blackHolesFatalToggleEl) {
+    blackHolesFatalToggleEl.disabled = !game.settings.spaceMode;
+    blackHolesFatalToggleEl.checked = game.settings.blackHolesFatal !== false;
   }
   if (worldModeBtn) {
     worldModeBtn.textContent = game.settings.spaceMode ? "World: Planets" : "World: Space";
@@ -1147,17 +1157,48 @@ function entityInsideBlackHoleSingularity(x, y, radius) {
   return false;
 }
 
-/** Mines, loot, shots, explosions, and the raider vanish at the core; player = game over. */
-function applyBlackHoleConsumption() {
+/** Mines, loot, shots, explosions, and the raider vanish at the core; player fatal or hull scrape. */
+function applyBlackHoleConsumption(dt) {
   if (!game.settings.spaceMode || game.gameOver) return;
   if (!game.planets.some((w) => w.kind === "blackHole")) return;
 
+  const dts = typeof dt === "number" ? dt : 0;
+  if (game.blackHoleHullScratchCd > 0) {
+    game.blackHoleHullScratchCd = Math.max(0, game.blackHoleHullScratchCd - dts);
+  }
+
   const p = game.player;
   if (p && entityInsideBlackHoleSingularity(p.x, p.y, p.radius)) {
-    game.hull = 0;
-    game.gameOver = true;
-    statusEl.textContent = "The black hole claims you — game over.";
-    return;
+    if (game.settings.blackHolesFatal !== false) {
+      game.hull = 0;
+      game.gameOver = true;
+      statusEl.textContent = "The black hole claims you — game over.";
+      return;
+    }
+    if (
+      game.blackHoleHullScratchCd <= 0 &&
+      game.invuln <= 0 &&
+      game.immunityTimer <= 0
+    ) {
+      const hullLoss = BASE_HULL * 0.25;
+      game.hull = Math.max(0, game.hull - hullLoss);
+      game.blackHoleHullScratchCd = 2.1;
+      game.invuln = Math.max(game.invuln, 1.25);
+      p.vx *= 0.45;
+      p.vy *= 0.45;
+      game.hasBlaster = false;
+      game.blasterTier = 0;
+      game.bullets = [];
+      game.blasterCooldown = 0;
+      statusEl.textContent =
+        game.hull > 0
+          ? "Singularity scrape — lost 25% base hull (shields ignored)."
+          : "Your boat sank.";
+      if (game.hull <= 0) {
+        game.gameOver = true;
+        statusEl.textContent = `Game Over - final score ${game.score}. Restart to sail again.`;
+      }
+    }
   }
 
   if (
@@ -2891,7 +2932,7 @@ function frame(ts) {
     handleBulletMineHits();
     updateBoss(dt);
     updateBossBullets(dt);
-    applyBlackHoleConsumption();
+    applyBlackHoleConsumption(dt);
     handleCollisions();
     if (
       game.spaceStation &&
@@ -3042,6 +3083,18 @@ if (damageOpacityToggleEl) {
     statusEl.textContent = game.settings.damageOpacity
       ? "Damage opacity on: ship fades when hull is low."
       : "Damage opacity off: ship stays full opacity.";
+  });
+}
+if (blackHolesFatalToggleEl) {
+  blackHolesFatalToggleEl.addEventListener("change", () => {
+    if (!game.settings.spaceMode) {
+      blackHolesFatalToggleEl.checked = game.settings.blackHolesFatal !== false;
+      return;
+    }
+    game.settings.blackHolesFatal = blackHolesFatalToggleEl.checked;
+    statusEl.textContent = game.settings.blackHolesFatal
+      ? "Black hole core: lethal (touch = game over)."
+      : "Black hole core: scrape — 25% base hull per hit, ignores shields (~2s cooldown).";
   });
 }
 if (bossLevelsToggleEl) {
@@ -3388,6 +3441,10 @@ shockwaveToggleEl.checked = game.settings.shockwaves;
 mineChainToggleEl.checked = game.settings.mineChainBlast;
 if (damageOpacityToggleEl) damageOpacityToggleEl.checked = game.settings.damageOpacity;
 if (bossLevelsToggleEl) bossLevelsToggleEl.checked = game.settings.bossLevelsEnabled !== false;
+if (blackHolesFatalToggleEl) {
+  blackHolesFatalToggleEl.disabled = !game.settings.spaceMode;
+  blackHolesFatalToggleEl.checked = game.settings.blackHolesFatal !== false;
+}
 if (levelPauseToggleEl) levelPauseToggleEl.checked = game.settings.pauseOnLevelUp;
 startLevelInputEl.value = String(game.settings.startLevel);
 requestAnimationFrame(frame);
