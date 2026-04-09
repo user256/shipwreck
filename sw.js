@@ -7,6 +7,7 @@ const CORE_ASSETS = [
   "./manifest.webmanifest",
   "./assets/serenity.svg",
   "./assets/firefly.svg",
+  "./assets/starfighter.svg",
   "./assets/iss-station.svg",
 ];
 

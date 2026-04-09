@@ -4,6 +4,7 @@ const ctx = canvas.getContext("2d");
 /** Raster ship skins; loaded on demand when selected. */
 let serenityShipImg = null;
 let fireflyShipImg = null;
+let starfighterShipImg = null;
 let issStationImg = null;
 const scoreEl = document.getElementById("score");
 const levelEl = document.getElementById("level");
@@ -242,6 +243,7 @@ const SHIP_SKIN_OPTIONS = [
   { id: "default", label: "Classic" },
   { id: "serenity", label: "Serenity", rasterScale: 1 },
   { id: "firefly", label: "Firefly", rasterScale: 0.88 },
+  { id: "starfighter", label: "Starfighter", rasterScale: 1 },
 ];
 
 function getShipSkinDisplayLabel() {
@@ -2598,6 +2600,14 @@ function getRasterImageForSkin(skinId) {
   ) {
     return fireflyShipImg;
   }
+  if (
+    skinId === "starfighter" &&
+    starfighterShipImg &&
+    starfighterShipImg.complete &&
+    starfighterShipImg.naturalWidth > 0
+  ) {
+    return starfighterShipImg;
+  }
   return null;
 }
 
@@ -3311,7 +3321,9 @@ function applyModeFromQueryString() {
       game.settings.singularity = false;
     }
     const shipParam = params.get("ship");
-    if (shipParam === "serenity" || shipParam === "firefly") game.settings.shipSkin = shipParam;
+    if (shipParam === "serenity" || shipParam === "firefly" || shipParam === "starfighter") {
+      game.settings.shipSkin = shipParam;
+    }
     const levelParam = params.get("level");
     if (levelParam !== null && levelParam !== "") {
       const n = Number.parseInt(levelParam, 10);
@@ -3330,6 +3342,10 @@ function loadRasterShipAssets() {
   if (game.settings.shipSkin === "firefly" && !fireflyShipImg) {
     fireflyShipImg = new Image();
     fireflyShipImg.src = "./assets/firefly.svg";
+  }
+  if (game.settings.shipSkin === "starfighter" && !starfighterShipImg) {
+    starfighterShipImg = new Image();
+    starfighterShipImg.src = "./assets/starfighter.svg";
   }
   if (game.settings.spaceStationsEnabled) ensureIssStationImg();
 }
